@@ -7,7 +7,7 @@ A reinforcement-learning final project built as a four-room escape game. Each ro
 - Task 0: shared system specification — complete.
 - Task 1: known-model grid room with Policy Iteration — initial implementation complete.
 - The application UI and all runtime controls are in English.
-- A top navigation bar switches between Rooms 1–4.
+- A full-width button navigation bar switches between Rooms 1–4 from right to left, with no radio-button controls.
 - Each room has a dedicated left control bar for environment settings, rewards, hyperparameters, training, testing, and model management.
 - Room 1 includes a clickable 10x10 grid editor. Every non-terminal cell can be changed to Normal, Icy, or Wall; icy cells expose a five-outcome probability editor.
 

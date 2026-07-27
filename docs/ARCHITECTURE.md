@@ -5,7 +5,7 @@
 The system is a single Streamlit application:
 
 1. The browser renders the English dashboard and grid visualization as HTML.
-2. The top navigation bar switches between Rooms 1–4.
+2. A full-width sticky button bar switches between Rooms 1–4 in right-to-left visual order and highlights the active room.
 3. A room-specific vertical control bar appears on the left and contains the relevant environment, reward, hyperparameter, training, testing, and model controls.
 4. Room 1 renders every grid cell as a popover editor for Normal, Icy, and Wall types. Icy cells expose their complete outcome distribution in percentages.
 5. Streamlit sends user actions to the server-side Python application.

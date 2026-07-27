@@ -52,6 +52,29 @@ st.markdown(
       [data-testid="stSidebar"] h1,
       [data-testid="stSidebar"] h2,
       [data-testid="stSidebar"] h3 { letter-spacing: -0.02em; }
+      [data-testid="stMainBlockContainer"] { padding-top: 1.25rem; }
+      .st-key-main_top_nav {
+        position: sticky;
+        top: 0.75rem;
+        z-index: 999;
+        width: 100%;
+        padding: 0.55rem;
+        margin-bottom: 1.35rem;
+        border: 1px solid rgba(128, 128, 128, 0.28);
+        border-radius: 0.8rem;
+        background: rgba(20, 23, 32, 0.96);
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.24);
+        backdrop-filter: blur(12px);
+      }
+      .st-key-main_top_nav [data-testid="stHorizontalBlock"] { gap: 0.5rem; }
+      .st-key-main_top_nav button {
+        min-height: 3rem;
+        border-radius: 0.55rem;
+        font-size: 1rem;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+      }
+      .st-key-main_top_nav button:hover { transform: translateY(-1px); }
       .room-header {
         padding: 0.4rem 0 0.8rem 0;
         border-bottom: 1px solid rgba(128, 128, 128, 0.25);
@@ -66,9 +89,16 @@ st.markdown(
         border-radius: 8px;
         overflow: hidden;
         background: #f7f9fb;
+        padding-top: 1rem;
+        box-sizing: border-box;
       }
-      .st-key-room1_grid_editor [data-testid="stVerticalBlock"] { gap: 0; }
-      .st-key-room1_grid_editor [data-testid="stHorizontalBlock"] { gap: 0; }
+      .st-key-room1_grid_editor [data-testid="stHorizontalBlock"] {
+        column-gap: 0 !important;
+        margin-top: -1rem !important;
+      }
+      .st-key-room1_grid_editor [data-testid="stElementContainer"] {
+        margin: 0 !important;
+      }
       .st-key-room1_grid_editor [data-testid="stPopover"] button {
         position: relative;
         width: 100%;
@@ -112,6 +142,7 @@ st.markdown(
 
 def initialize_state() -> None:
     defaults = {
+        "active_room": "Room 1",
         "room1_walls": set(DEFAULT_WALLS),
         "room1_slippery": {},
         "room1_probability_errors": set(),
@@ -228,16 +259,23 @@ def room1_configuration_error() -> str | None:
 
 
 def render_room_navigation() -> str:
-    st.markdown("### Room navigation")
-    selected = st.radio(
-        "Room navigation",
-        options=["Room 1", "Room 2", "Room 3", "Room 4"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="active_room",
-    )
-    st.divider()
-    return selected
+    rooms = ["Room 1", "Room 2", "Room 3", "Room 4"]
+    active_room = st.session_state.active_room
+    with st.container(key="main_top_nav"):
+        columns = st.columns(4, gap="small")
+        # Visual order is right-to-left: Room 1 is the rightmost button.
+        for column, room in zip(columns, reversed(rooms), strict=True):
+            with column:
+                selected = st.button(
+                    room,
+                    key=f"navigate_{room.lower().replace(' ', '_')}",
+                    type="primary" if room == active_room else "secondary",
+                    use_container_width=True,
+                )
+                if selected and room != active_room:
+                    st.session_state.active_room = room
+                    st.rerun()
+    return st.session_state.active_room
 
 
 def render_room1_environment_controls() -> str | None:
@@ -483,7 +521,7 @@ def render_grid_editor() -> None:
 
             selector = (
                 f'.st-key-room1_cell_{x}_{y} '
-                '[data-testid="stPopover"] > button'
+                '[data-testid="stPopover"] button'
             )
             cell_styles.extend(
                 [
@@ -498,7 +536,7 @@ def render_grid_editor() -> None:
 
     with st.container(key="room1_grid_editor"):
         for y in reversed(range(10)):
-            columns = st.columns(10, gap="small")
+            columns = st.columns(10, gap=None)
             for column, x in zip(columns, reversed(range(10)), strict=True):
                 state = (x, y)
                 protected_label = None
@@ -512,8 +550,8 @@ def render_grid_editor() -> None:
                     cell_label = f"{icon_by_type[current_cell_type(state)]} {x},{y}"
 
                 with column:
-                    with st.container(key=f"room1_cell_{x}_{y}"):
-                      with st.popover(cell_label, use_container_width=True):
+                  with st.container(key=f"room1_cell_{x}_{y}"):
+                    with st.popover(cell_label, use_container_width=True):
                         st.markdown(f"**Cell {state_label(state)}**")
                         if protected_label is not None:
                             st.info(protected_label)
