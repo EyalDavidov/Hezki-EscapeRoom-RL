@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import sys
+import time
 from dataclasses import asdict
-from math import isclose
 from pathlib import Path
 from typing import Any
 
@@ -45,8 +45,7 @@ from escape_room_rl.room1 import (  # noqa: E402
     Room1Config,
     Room1Environment,
     SlipperyCell,
-    generate_random_slippery_cells,
-    slippery_candidates,
+    generate_random_grid_layout,
 )
 from escape_room_rl.room2 import (  # noqa: E402
     DEFAULT_ROOM2_REWARDS,
@@ -238,6 +237,10 @@ def initialize_state() -> None:
         # Room 1
         "room1_walls": set(DEFAULT_WALLS),
         "room1_slippery": {},
+        "room1_start": (0, 0),
+        "room1_goal": (9, 9),
+        "room1_terminal_states": {(9, 9)},
+        "room1_cell_rewards": {},
         "room1_probability_errors": set(),
         "room1_reward_values": dict(DEFAULT_REWARDS),
         "room1_reward_enabled": {"step", "goal_reached"},
@@ -259,10 +262,14 @@ def initialize_state() -> None:
             "max_timesteps": 250,
             "seed": 123,
         },
-        "room1_random_controls": {"count": 8, "seed": 42},
+        "room1_random_controls": {"wall_count": 20, "icy_count": 8, "seed": 42},
         # Room 2 (SARSA)
         "room2_walls": set(DEFAULT_ROOM2_WALLS),
         "room2_slippery": {},
+        "room2_start": (0, 0),
+        "room2_goal": (9, 9),
+        "room2_terminal_states": {(9, 9)},
+        "room2_cell_rewards": {},
         "room2_probability_errors": set(),
         "room2_reward_values": dict(DEFAULT_ROOM2_REWARDS),
         "room2_reward_enabled": {"step", "goal_reached"},
@@ -287,10 +294,14 @@ def initialize_state() -> None:
             "max_timesteps": 200,
             "seed": 123,
         },
-        "room2_random_controls": {"count": 6, "seed": 42},
+        "room2_random_controls": {"wall_count": 16, "icy_count": 6, "seed": 42},
         # Room 3 (Q-Learning)
         "room3_walls": set(DEFAULT_ROOM3_WALLS),
         "room3_slippery": {},
+        "room3_start": (0, 0),
+        "room3_goal": (9, 9),
+        "room3_terminal_states": {(9, 9)},
+        "room3_cell_rewards": {},
         "room3_probability_errors": set(),
         "room3_reward_values": dict(DEFAULT_ROOM3_REWARDS),
         "room3_reward_enabled": {"step", "goal_reached"},
@@ -315,11 +326,20 @@ def initialize_state() -> None:
             "max_timesteps": 200,
             "seed": 123,
         },
-        "room3_random_controls": {"count": 6, "seed": 42},
+        "room3_random_controls": {"wall_count": 14, "icy_count": 6, "seed": 42},
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    for room_num, wall_default, icy_default in ((1, 20, 8), (2, 16, 6), (3, 14, 6)):
+        random_key = f"room{room_num}_random_controls"
+        if "wall_count" not in st.session_state[random_key]:
+            old = st.session_state[random_key]
+            st.session_state[random_key] = {
+                "wall_count": wall_default,
+                "icy_count": int(old.get("count", icy_default)),
+                "seed": int(old.get("seed", 42)),
+            }
 
 
 def state_label(state: tuple[int, int]) -> str:
@@ -351,7 +371,7 @@ def render_room_navigation() -> str:
     active_room = st.session_state.active_room
     with st.container(key="main_top_nav"):
         columns = st.columns(4, gap="small")
-        for column, room in zip(columns, rooms, strict=True):
+        for column, room in zip(columns, reversed(rooms), strict=True):
             with column:
                 selected = st.button(
                     room,
@@ -393,7 +413,7 @@ def current_cell_type(room_num: int, state: tuple[int, int]) -> str:
 def apply_cell_type(state: tuple[int, int], widget_key: str, room_num: int) -> None:
     p = room_prefix(room_num)
     selected_type = st.session_state[widget_key]
-    if state in ((0, 0), (9, 9)):
+    if state == st.session_state[f"{p}_start"] or state in st.session_state[f"{p}_terminal_states"]:
         return
     previous_type = current_cell_type(room_num, state)
     if selected_type == previous_type:
@@ -403,10 +423,66 @@ def apply_cell_type(state: tuple[int, int], widget_key: str, room_num: int) -> N
     st.session_state[f"{p}_slippery"].pop(state, None)
     st.session_state[f"{p}_probability_errors"].discard(state)
     if selected_type == "Wall":
+        st.session_state[f"{p}_cell_rewards"].pop(state, None)
         st.session_state[f"{p}_walls"].add(state)
     elif selected_type == "Icy":
         st.session_state[f"{p}_slippery"][state] = SlipperyCell()
     invalidate_room_model(room_num)
+
+
+def set_cell_as_start(room_num: int, state: tuple[int, int]) -> None:
+    p = room_prefix(room_num)
+    if state == st.session_state[f"{p}_goal"]:
+        return
+    st.session_state[f"{p}_walls"].discard(state)
+    st.session_state[f"{p}_slippery"].pop(state, None)
+    st.session_state[f"{p}_terminal_states"].discard(state)
+    st.session_state[f"{p}_probability_errors"].discard(state)
+    st.session_state[f"{p}_start"] = state
+    st.session_state[f"{p}_editor_nonce"] += 1
+    invalidate_room_model(room_num)
+
+
+def set_cell_as_goal(room_num: int, state: tuple[int, int]) -> None:
+    p = room_prefix(room_num)
+    if state == st.session_state[f"{p}_start"]:
+        return
+    previous_goal = st.session_state[f"{p}_goal"]
+    st.session_state[f"{p}_walls"].discard(state)
+    st.session_state[f"{p}_slippery"].pop(state, None)
+    st.session_state[f"{p}_probability_errors"].discard(state)
+    st.session_state[f"{p}_terminal_states"].discard(previous_goal)
+    st.session_state[f"{p}_terminal_states"].add(state)
+    st.session_state[f"{p}_goal"] = state
+    st.session_state[f"{p}_editor_nonce"] += 1
+    invalidate_room_model(room_num)
+
+
+def update_cell_termination(room_num: int, state: tuple[int, int], widget_key: str) -> None:
+    p = room_prefix(room_num)
+    enabled = bool(st.session_state[widget_key])
+    if state in {st.session_state[f"{p}_start"], st.session_state[f"{p}_goal"]}:
+        return
+    if enabled:
+        st.session_state[f"{p}_walls"].discard(state)
+        st.session_state[f"{p}_slippery"].pop(state, None)
+        st.session_state[f"{p}_probability_errors"].discard(state)
+        st.session_state[f"{p}_terminal_states"].add(state)
+    else:
+        st.session_state[f"{p}_terminal_states"].discard(state)
+    invalidate_room_model(room_num)
+
+
+def update_cell_reward(room_num: int, state: tuple[int, int], enabled: bool, value: float) -> None:
+    p = room_prefix(room_num)
+    previous = st.session_state[f"{p}_cell_rewards"].get(state)
+    if enabled:
+        st.session_state[f"{p}_cell_rewards"][state] = float(value)
+    else:
+        st.session_state[f"{p}_cell_rewards"].pop(state, None)
+    current = st.session_state[f"{p}_cell_rewards"].get(state)
+    if current != previous:
+        invalidate_room_model(room_num)
 
 
 def build_environment(room_num: int) -> Any:
@@ -414,12 +490,21 @@ def build_environment(room_num: int) -> Any:
     walls = frozenset(st.session_state[f"{p}_walls"])
     slippery = dict(st.session_state[f"{p}_slippery"])
     rewards = dict(st.session_state[f"{p}_reward_values"])
+    common = {
+        "start": st.session_state[f"{p}_start"],
+        "goal": st.session_state[f"{p}_goal"],
+        "walls": walls,
+        "slippery": slippery,
+        "rewards": rewards,
+        "terminal_states": frozenset(st.session_state[f"{p}_terminal_states"]),
+        "cell_rewards": dict(st.session_state[f"{p}_cell_rewards"]),
+    }
     if room_num == 1:
-        return Room1Environment(Room1Config(walls=walls, slippery=slippery, rewards=rewards))
+        return Room1Environment(Room1Config(**common))
     elif room_num == 2:
-        return Room2Environment(Room2Config(walls=walls, slippery=slippery, rewards=rewards))
+        return Room2Environment(Room2Config(**common))
     else:
-        return Room3Environment(Room3Config(walls=walls, slippery=slippery, rewards=rewards))
+        return Room3Environment(Room3Config(**common))
 
 
 def room_configuration_error(room_num: int) -> str | None:
@@ -438,7 +523,7 @@ def room_configuration_error(room_num: int) -> str | None:
 
 
 def render_grid_editor(room_num: int) -> None:
-    """Render the interactive 10x10 map with cell popovers to edit cell type and probabilities."""
+    """Render a full per-cell editor for layout, roles, rewards and ice."""
     p = room_prefix(room_num)
     outcome_labels = {
         "reach": "Reach the icy cell (no slide)",
@@ -449,6 +534,10 @@ def render_grid_editor(room_num: int) -> None:
     }
     icon_by_type = {"Normal": "⬜", "Icy": "❄️", "Wall": "🧱"}
     nonce = st.session_state[f"{p}_editor_nonce"]
+    start = st.session_state[f"{p}_start"]
+    goal = st.session_state[f"{p}_goal"]
+    terminals = st.session_state[f"{p}_terminal_states"]
+    cell_rewards = st.session_state[f"{p}_cell_rewards"]
 
     cell_styles: list[str] = []
     for y in reversed(range(10)):
@@ -459,13 +548,17 @@ def render_grid_editor(room_num: int) -> None:
             background = "#f7f9fb"
             coordinate_color = "#263238"
             outline = "none"
-            if state == (0, 0):
+            if state == start:
                 icon = "🐕"
                 background = "#fff3cd"
                 outline = "inset 0 0 0 3px #43a047"
-            elif state == (9, 9):
+            elif state == goal:
                 icon = "🚪"
                 outline = "inset 0 0 0 3px #f9a825"
+            elif state in terminals:
+                icon = "🛑"
+                background = "#ffe4e6"
+                outline = "inset 0 0 0 3px #e11d48"
             elif cell_type == "Wall":
                 icon = "🧱"
                 background = "#455a64"
@@ -473,6 +566,9 @@ def render_grid_editor(room_num: int) -> None:
             elif cell_type == "Icy":
                 icon = "❄️"
                 background = "#dff6ff"
+            elif state in cell_rewards:
+                icon = "🎁"
+                background = "#f3e8ff"
 
             selector = f'.st-key-{p}_cell_{x}_{y} [data-testid="stPopover"] button'
             cell_styles.extend(
@@ -489,13 +585,14 @@ def render_grid_editor(room_num: int) -> None:
             columns = st.columns(10, gap=None)
             for column, x in zip(columns, reversed(range(10)), strict=True):
                 state = (x, y)
-                protected_label = None
-                if state == (0, 0):
+                if state == start:
                     cell_label = f"🐕 {x},{y}"
-                    protected_label = "This is the protected agent start cell."
-                elif state == (9, 9):
+                elif state == goal:
                     cell_label = f"🚪 {x},{y}"
-                    protected_label = "This is the protected goal cell."
+                elif state in terminals:
+                    cell_label = f"🛑 {x},{y}"
+                elif state in cell_rewards and current_cell_type(room_num, state) == "Normal":
+                    cell_label = f"🎁 {x},{y}"
                 else:
                     cell_label = f"{icon_by_type[current_cell_type(room_num, state)]} {x},{y}"
 
@@ -503,16 +600,6 @@ def render_grid_editor(room_num: int) -> None:
                     with st.container(key=f"{p}_cell_{x}_{y}"):
                         with st.popover(cell_label, use_container_width=True):
                             st.markdown(f"**Cell {state_label(state)}**")
-                            if protected_label is not None:
-                                st.info(protected_label)
-                                st.radio(
-                                    "Cell type",
-                                    options=["Normal"],
-                                    disabled=True,
-                                    key=f"protected_cell_{p}_{nonce}_{x}_{y}",
-                                )
-                                continue
-
                             type_key = f"cell_type_{p}_{nonce}_{x}_{y}"
                             cell_type = current_cell_type(room_num, state)
                             selected_type = st.radio(
@@ -521,9 +608,80 @@ def render_grid_editor(room_num: int) -> None:
                                 index=["Normal", "Icy", "Wall"].index(cell_type),
                                 horizontal=True,
                                 key=type_key,
+                                disabled=state == start or state in terminals,
+                                help=(
+                                    "Controls whether the cell is walkable normally, uses a stochastic "
+                                    "ice transition, or blocks movement as a wall. Start and termination "
+                                    "cells must remain walkable."
+                                ),
                                 on_change=apply_cell_type,
                                 args=(state, type_key, room_num),
                             )
+
+                            st.caption("Cell roles")
+                            start_col, goal_col = st.columns(2)
+                            with start_col:
+                                if st.button(
+                                    "🐕 Set as start",
+                                    key=f"set_start_{p}_{nonce}_{x}_{y}",
+                                    disabled=state == start or state == goal,
+                                    help="Moves the dog's episode start position to this cell.",
+                                    use_container_width=True,
+                                ):
+                                    set_cell_as_start(room_num, state)
+                                    st.rerun()
+                            with goal_col:
+                                if st.button(
+                                    "🚪 Set as goal",
+                                    key=f"set_goal_{p}_{nonce}_{x}_{y}",
+                                    disabled=state == goal or state == start,
+                                    help="Moves the main success target here and makes it a termination state.",
+                                    use_container_width=True,
+                                ):
+                                    set_cell_as_goal(room_num, state)
+                                    st.rerun()
+
+                            termination_key = f"termination_{p}_{nonce}_{x}_{y}"
+                            st.checkbox(
+                                "Termination state",
+                                value=state in terminals,
+                                key=termination_key,
+                                disabled=state in {start, goal} or selected_type == "Wall",
+                                help=(
+                                    "Ends the episode immediately when the agent enters this cell. "
+                                    "The main goal is always a termination state."
+                                ),
+                                on_change=update_cell_termination,
+                                args=(room_num, state, termination_key),
+                            )
+
+                            reward_enabled = state in cell_rewards
+                            reward_toggle = st.checkbox(
+                                "Custom reward on entry",
+                                value=reward_enabled,
+                                key=f"cell_reward_enabled_{p}_{nonce}_{x}_{y}",
+                                disabled=selected_type == "Wall",
+                                help=(
+                                    "Adds the configured reward or penalty whenever the agent enters "
+                                    "this specific cell, in addition to global event rewards."
+                                ),
+                            )
+                            reward_value = st.number_input(
+                                "Cell reward value",
+                                value=float(cell_rewards.get(state, 0.0)),
+                                step=0.1,
+                                format="%.3f",
+                                key=f"cell_reward_value_{p}_{nonce}_{x}_{y}",
+                                disabled=not reward_toggle or selected_type == "Wall",
+                                help="Positive values attract the agent; negative values discourage entry.",
+                            )
+                            update_cell_reward(
+                                room_num,
+                                state,
+                                reward_toggle and selected_type != "Wall",
+                                float(reward_value),
+                            )
+
                             if selected_type != "Icy":
                                 continue
 
@@ -531,30 +689,28 @@ def render_grid_editor(room_num: int) -> None:
                             st.caption(
                                 "Set the complete outcome distribution. The five values must total 100%."
                             )
-                            percentages: dict[str, float] = {}
+                            percentages: dict[str, int] = {}
                             for outcome in SLIP_OUTCOMES:
                                 percentages[outcome] = st.number_input(
                                     f"{outcome_labels[outcome]} (%)",
-                                    min_value=0.0,
-                                    max_value=100.0,
-                                    value=float(getattr(current, outcome) * 100.0),
-                                    step=1.0,
-                                    format="%.1f",
+                                    min_value=0,
+                                    max_value=100,
+                                    value=int(round(getattr(current, outcome) * 100)),
+                                    step=1,
+                                    format="%d",
                                     key=f"cell_prob_{p}_{nonce}_{x}_{y}_{outcome}",
+                                    help="Integer percentage assigned to this outcome when entering the icy cell.",
                                 )
                             total = sum(percentages.values())
-                            st.metric("Probability total", f"{total:.1f}%")
-                            if not isclose(total, 100.0, abs_tol=1e-9):
+                            st.metric("Probability total", f"{total}%")
+                            if total != 100:
                                 st.session_state[f"{p}_probability_errors"].add(state)
                                 st.error("The probabilities must total exactly 100%.")
                                 continue
 
                             st.session_state[f"{p}_probability_errors"].discard(state)
                             updated = SlipperyCell(
-                                **{
-                                    outcome: percentage / 100.0
-                                    for outcome, percentage in percentages.items()
-                                }
+                                **{outcome: percentage / 100.0 for outcome, percentage in percentages.items()}
                             )
                             if updated != current:
                                 st.session_state[f"{p}_slippery"][state] = updated
@@ -571,21 +727,30 @@ def render_environment_page(room_num: int) -> None:
     )
     walls = st.session_state[f"{p}_walls"]
     slippery = st.session_state[f"{p}_slippery"]
-    m1, m2, m3, m4 = st.columns(4)
+    terminals = st.session_state[f"{p}_terminal_states"]
+    cell_rewards = st.session_state[f"{p}_cell_rewards"]
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Grid cells", 100)
     m2.metric("Walkable states", 100 - len(walls))
     m3.metric("Walls", len(walls))
     m4.metric("Icy cells", len(slippery))
+    m5.metric("Terminations", len(terminals))
+    m6.metric("Cell rewards", len(cell_rewards))
     st.markdown(
         '<div class="legend-row">'
         '<span class="legend-item">🐕 Agent / start</span>'
         '<span class="legend-item">🚪 Goal</span>'
         '<span class="legend-item">🧱 Wall</span>'
         '<span class="legend-item">❄️ Icy cell</span>'
+        '<span class="legend-item">🛑 Termination</span>'
+        '<span class="legend-item">🎁 Custom reward</span>'
         '</div>',
         unsafe_allow_html=True,
     )
-    st.caption("Select any cell in the grid below to open its popover editor. Start (0,0) and goal (9,9) are protected.")
+    st.caption(
+        f"Select any cell to edit it. Current start: {state_label(st.session_state[f'{p}_start'])}; "
+        f"main goal: {state_label(st.session_state[f'{p}_goal'])}."
+    )
     render_grid_editor(room_num)
 
     config_err = room_configuration_error(room_num)
@@ -617,8 +782,11 @@ def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
         env = build_environment(room_num)
         controls = st.session_state[f"{p}_training_controls"]
         status_slot = st.empty()
-        chart_slot_1 = st.empty()
-        chart_slot_2 = st.empty()
+        live_chart_col_1, live_chart_col_2 = st.columns(2)
+        with live_chart_col_1:
+            chart_slot_1 = st.empty()
+        with live_chart_col_2:
+            chart_slot_2 = st.empty()
         live_rows: list[dict] = []
 
         if room_num == 1:
@@ -719,12 +887,20 @@ def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
         st.subheader("Value / Delta Convergence")
         y_col = "delta" if room_num == 1 else "total_reward"
         x_col = "global_step" if room_num == 1 else "episode"
-        st.line_chart(frame.set_index(x_col)[[y_col]])
+        st.line_chart(
+            frame.set_index(x_col)[[y_col]],
+            x_label="Bellman sweep" if room_num == 1 else "Training episode",
+            y_label="Maximum value delta" if room_num == 1 else "Episode total reward",
+        )
     with c2:
         st.subheader("Policy Changes / Epsilon Decay")
         y_col2 = "policy_changes" if room_num == 1 else "epsilon"
         x_col2 = "policy_iteration" if room_num == 1 else "episode"
-        st.line_chart(frame.set_index(x_col2)[[y_col2]])
+        st.line_chart(
+            frame.set_index(x_col2)[[y_col2]],
+            x_label="Policy iteration" if room_num == 1 else "Training episode",
+            y_label="Changed actions" if room_num == 1 else "Exploration epsilon",
+        )
 
     if room_num == 1 and res.converged:
         st.markdown(
@@ -783,10 +959,18 @@ def render_test_page(room_num: int, run_requested: bool) -> None:
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Timesteps by episode")
-        st.bar_chart(frame.set_index("episode")[["timesteps"]])
+        st.bar_chart(
+            frame.set_index("episode")[["timesteps"]],
+            x_label="Test episode",
+            y_label="Timesteps used",
+        )
     with c2:
         st.subheader("Reward by episode")
-        st.line_chart(frame.set_index("episode")[["total_reward"]])
+        st.line_chart(
+            frame.set_index("episode")[["total_reward"]],
+            x_label="Test episode",
+            y_label="Total reward",
+        )
 
     st.subheader("Detailed Episode Results")
     st.dataframe(frame, hide_index=True, use_container_width=True)
@@ -796,37 +980,65 @@ def render_test_page(room_num: int, run_requested: bool) -> None:
         "Select episode to replay",
         options=[episode.episode for episode in test_results],
         key=f"{p}_replay_ep_select",
+        help="Choose which recorded test episode will be animated.",
     )
     selected_episode = next(
         episode for episode in test_results if episode.episode == selected_number
     )
-    replay_step = st.slider(
-        "Replay timestep",
-        min_value=0,
-        max_value=len(selected_episode.trajectory),
-        value=0,
-        key=f"{p}_replay_step_slider",
-    )
-    if replay_step == 0:
-        agent_state = env.start
-        st.write("Initial state `(0, 0)`")
-    else:
-        step = selected_episode.trajectory[replay_step - 1]
-        agent_state = step.next_state
-        st.write(
-            f"Action: `{step.action.value}` • outcome: `{step.outcome}` • "
-            f"reward: {step.reward:.3f} • cumulative: {step.cumulative_reward:.3f}"
+    play_col, speed_col, info_col = st.columns([1, 1, 3])
+    with play_col:
+        play_requested = st.button(
+            "▶ Play replay",
+            type="primary",
+            use_container_width=True,
+            key=f"{p}_play_replay",
+            help="Automatically animates the episode from start to finish.",
+        )
+    with speed_col:
+        playback_speed = st.selectbox(
+            "Playback speed",
+            options=[0.5, 1.0, 2.0, 4.0],
+            index=1,
+            format_func=lambda value: f"{value:g}×",
+            key=f"{p}_replay_speed",
+            help="Base speed is 5 timesteps per second. The multiplier changes that rate.",
+        )
+    with info_col:
+        st.caption(
+            f"{len(selected_episode.trajectory)} recorded timesteps • "
+            f"{5 * playback_speed:g} steps/second"
         )
 
-    st.markdown(
-        render_grid_html(
-            env,
-            agent_state=agent_state,
-            policy=res.policy,
-            values=res.values,
-        ),
+    replay_status = st.empty()
+    replay_grid = st.empty()
+    replay_status.info(f"Ready at start cell {state_label(env.start)}.")
+    replay_grid.markdown(
+        render_grid_html(env, agent_state=env.start, policy=res.policy, values=res.values),
         unsafe_allow_html=True,
     )
+    if play_requested:
+        delay = 1.0 / (5.0 * playback_speed)
+        for index, step in enumerate(selected_episode.trajectory, start=1):
+            replay_status.info(
+                f"Timestep {index}/{len(selected_episode.trajectory)} • "
+                f"action `{step.action.value}` • outcome `{step.outcome}` • "
+                f"reward {step.reward:.3f} • cumulative {step.cumulative_reward:.3f}"
+            )
+            replay_grid.markdown(
+                render_grid_html(
+                    env,
+                    agent_state=step.next_state,
+                    policy=res.policy,
+                    values=res.values,
+                ),
+                unsafe_allow_html=True,
+            )
+            time.sleep(delay)
+        replay_status.success(
+            "Replay complete — goal reached."
+            if selected_episode.success
+            else "Replay complete — episode ended without reaching the main goal."
+        )
 
 
 def render_models_page(room_num: int) -> None:
@@ -868,14 +1080,12 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
         "Control section",
         options=["Environment", "Training", "Testing", "Models"],
         key=f"{p}_control_section",
+        help="Choose which group of room controls is shown in the left sidebar.",
     )
     st.sidebar.divider()
 
     # Environment controls in sidebar
-    base_configs = {1: Room1Config, 2: Room2Config, 3: Room3Config}
     defaults_walls = {1: DEFAULT_WALLS, 2: DEFAULT_ROOM2_WALLS, 3: DEFAULT_ROOM3_WALLS}
-    base_config = base_configs[room_num](walls=frozenset(st.session_state[f"{p}_walls"]))
-    candidates = slippery_candidates(base_config)
     random_controls = st.session_state[f"{p}_random_controls"]
 
     prob_err = room_configuration_error(room_num)
@@ -884,26 +1094,72 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
 
     if section == "Environment":
         st.sidebar.subheader("Grid layout")
-        if st.sidebar.button("Reset grid to default", key=f"{p}_reset_grid", use_container_width=True):
+        if st.sidebar.button(
+            "Reset grid to default",
+            key=f"{p}_reset_grid",
+            use_container_width=True,
+            help="Restores the room's original walls, start, goal, and removes ice and custom cell rewards.",
+        ):
             st.session_state[f"{p}_walls"] = set(defaults_walls[room_num])
             st.session_state[f"{p}_slippery"] = {}
+            st.session_state[f"{p}_start"] = (0, 0)
+            st.session_state[f"{p}_goal"] = (9, 9)
+            st.session_state[f"{p}_terminal_states"] = {(9, 9)}
+            st.session_state[f"{p}_cell_rewards"] = {}
             st.session_state[f"{p}_probability_errors"] = set()
             st.session_state[f"{p}_editor_nonce"] += 1
             invalidate_room_model(room_num)
             st.rerun()
 
-        st.sidebar.subheader("Random ice generator")
-        random_count = st.sidebar.number_input(
-            "Number of icy cells", 0, len(candidates), int(random_controls["count"]), key=f"{p}_random_count"
+        st.sidebar.subheader("Random full-grid generator")
+        random_walls = st.sidebar.number_input(
+            "Number of walls",
+            0,
+            80,
+            int(random_controls["wall_count"]),
+            key=f"{p}_random_walls",
+            help="Number of impassable wall cells placed by the generator.",
+        )
+        random_ice = st.sidebar.number_input(
+            "Number of icy cells",
+            0,
+            98,
+            int(random_controls["icy_count"]),
+            key=f"{p}_random_ice",
+            help="Number of stochastic icy cells, each with an integer probability distribution.",
         )
         random_seed = st.sidebar.number_input(
-            "Generator seed", 0, value=int(random_controls["seed"]), key=f"{p}_random_seed"
+            "Generator seed",
+            0,
+            value=int(random_controls["seed"]),
+            key=f"{p}_random_seed",
+            help="The same seed and counts reproduce the same start, goal, walls, and icy cells.",
         )
-        st.session_state[f"{p}_random_controls"] = {"count": int(random_count), "seed": int(random_seed)}
-        if st.sidebar.button("🎲 Generate icy cells", key=f"{p}_gen_ice", use_container_width=True):
-            st.session_state[f"{p}_slippery"] = generate_random_slippery_cells(
-                base_config, int(random_count), int(random_seed)
+        st.session_state[f"{p}_random_controls"] = {
+            "wall_count": int(random_walls),
+            "icy_count": int(random_ice),
+            "seed": int(random_seed),
+        }
+        random_layout_error = int(random_walls) + int(random_ice) + 2 > 100
+        if random_layout_error:
+            st.sidebar.error("Walls + icy cells must leave two cells for start and goal.")
+        if st.sidebar.button(
+            "🎲 Generate entire grid",
+            key=f"{p}_gen_grid",
+            use_container_width=True,
+            disabled=random_layout_error,
+            help="Generates a valid map including start, goal, walls, icy cells, and their probabilities.",
+        ):
+            layout = generate_random_grid_layout(
+                int(random_walls), int(random_ice), int(random_seed)
             )
+            st.session_state[f"{p}_start"] = layout.start
+            st.session_state[f"{p}_goal"] = layout.goal
+            st.session_state[f"{p}_walls"] = set(layout.walls)
+            st.session_state[f"{p}_slippery"] = dict(layout.slippery)
+            st.session_state[f"{p}_terminal_states"] = {layout.goal}
+            st.session_state[f"{p}_cell_rewards"] = {}
+            st.session_state[f"{p}_probability_errors"] = set()
             st.session_state[f"{p}_editor_nonce"] += 1
             invalidate_room_model(room_num)
             st.rerun()
@@ -914,7 +1170,10 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
                 description,
                 value=event in st.session_state[f"{p}_reward_enabled"],
                 key=f"{p}_reward_enabled_{event}",
+                help=f"Enable or disable the global reward event: {description.lower()}.",
             )
+            previous_enabled = event in st.session_state[f"{p}_reward_enabled"]
+            previous_value = st.session_state[f"{p}_reward_values"].get(event, 0.0)
             value = st.sidebar.number_input(
                 f"{description} value",
                 value=float(st.session_state[f"{p}_reward_values"].get(event, 0.0)),
@@ -922,6 +1181,7 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
                 format="%.3f",
                 disabled=not enabled,
                 key=f"{p}_reward_value_{event}",
+                help="The reward added whenever this event occurs. Positive attracts; negative penalizes.",
             )
             if enabled:
                 st.session_state[f"{p}_reward_enabled"].add(event)
@@ -929,32 +1189,85 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
             else:
                 st.session_state[f"{p}_reward_enabled"].discard(event)
                 st.session_state[f"{p}_reward_values"][event] = 0.0
+            if previous_enabled != enabled or previous_value != st.session_state[f"{p}_reward_values"][event]:
+                invalidate_room_model(room_num)
 
     elif section == "Training":
         controls = st.session_state[f"{p}_training_controls"]
         st.sidebar.subheader(algo_names[room_num])
         if room_num == 1:
-            gamma = st.sidebar.slider("Gamma", 0.0, 0.999, float(controls["gamma"]), 0.001, key=f"{p}_gamma")
-            theta = st.sidebar.number_input("Theta", 1e-12, 1.0, float(controls["theta"]), format="%.8f", key=f"{p}_theta")
-            max_pi = st.sidebar.number_input("Max policy iterations", 1, 1000, int(controls["max_policy_iterations"]), key=f"{p}_max_pi")
-            max_sweeps = st.sidebar.number_input("Max evaluation sweeps", 1, 100000, int(controls["max_evaluation_sweeps"]), key=f"{p}_max_sweeps")
-            seed = st.sidebar.number_input("Seed", 0, value=int(controls["seed"]), key=f"{p}_seed")
-            live_update = st.sidebar.number_input("Update charts every N sweeps", 1, 1000, int(controls["live_update_every"]), key=f"{p}_live_update")
+            gamma = st.sidebar.slider(
+                "Gamma", 0.0, 0.999, float(controls["gamma"]), 0.001,
+                key=f"{p}_gamma",
+                help="Discount factor: higher values make future rewards more important.",
+            )
+            theta = st.sidebar.number_input(
+                "Theta", 1e-12, 1.0, float(controls["theta"]), format="%.8f",
+                key=f"{p}_theta",
+                help="Policy Evaluation stops when the largest value change falls below this threshold.",
+            )
+            max_pi = st.sidebar.number_input(
+                "Max policy iterations", 1, 1000, int(controls["max_policy_iterations"]),
+                key=f"{p}_max_pi",
+                help="Safety limit on complete policy evaluation-and-improvement cycles.",
+            )
+            max_sweeps = st.sidebar.number_input(
+                "Max evaluation sweeps", 1, 100000, int(controls["max_evaluation_sweeps"]),
+                key=f"{p}_max_sweeps",
+                help="Maximum Bellman sweeps allowed during each policy evaluation phase.",
+            )
+            seed = st.sidebar.number_input(
+                "Seed", 0, value=int(controls["seed"]), key=f"{p}_seed",
+                help="Controls reproducible policy initialization and tie-breaking.",
+            )
+            live_update = st.sidebar.number_input(
+                "Update charts every N sweeps", 1, 1000, int(controls["live_update_every"]),
+                key=f"{p}_live_update",
+                help="Lower values refresh live graphs more often but add UI overhead.",
+            )
             st.session_state[f"{p}_training_controls"] = {
                 "gamma": float(gamma), "theta": float(theta),
                 "max_policy_iterations": int(max_pi), "max_evaluation_sweeps": int(max_sweeps),
                 "seed": int(seed), "live_update_every": int(live_update),
             }
         else:
-            alpha = st.sidebar.slider("Alpha (learning rate)", 0.01, 1.0, float(controls["alpha"]), 0.01, key=f"{p}_alpha")
-            gamma = st.sidebar.slider("Gamma (discount)", 0.0, 0.999, float(controls["gamma"]), 0.001, key=f"{p}_gamma")
-            eps_start = st.sidebar.slider("Epsilon start", 0.05, 1.0, float(controls["epsilon_start"]), 0.05, key=f"{p}_eps_start")
-            eps_min = st.sidebar.slider("Epsilon min", 0.01, 0.5, float(controls["epsilon_min"]), 0.01, key=f"{p}_eps_min")
-            eps_decay = st.sidebar.number_input("Epsilon decay rate", 0.8, 1.0, float(controls["epsilon_decay"]), format="%.4f", key=f"{p}_eps_decay")
-            episodes = st.sidebar.number_input("Training episodes", 10, 10000, int(controls["episodes"]), key=f"{p}_episodes")
-            max_steps = st.sidebar.number_input("Max timesteps per episode", 10, 5000, int(controls["max_timesteps"]), key=f"{p}_max_steps")
-            seed = st.sidebar.number_input("Seed", 0, value=int(controls["seed"]), key=f"{p}_seed")
-            live_update = st.sidebar.number_input("Update charts every N episodes", 1, 1000, int(controls["live_update_every"]), key=f"{p}_live_update")
+            alpha = st.sidebar.slider(
+                "Alpha (learning rate)", 0.01, 1.0, float(controls["alpha"]), 0.01,
+                key=f"{p}_alpha", help="Controls how strongly each new experience changes the Q-value.",
+            )
+            gamma = st.sidebar.slider(
+                "Gamma (discount)", 0.0, 0.999, float(controls["gamma"]), 0.001,
+                key=f"{p}_gamma", help="Higher values give more weight to rewards farther in the future.",
+            )
+            eps_start = st.sidebar.slider(
+                "Epsilon start", 0.05, 1.0, float(controls["epsilon_start"]), 0.05,
+                key=f"{p}_eps_start", help="Initial probability of choosing a random exploratory action.",
+            )
+            eps_min = st.sidebar.slider(
+                "Epsilon min", 0.01, 0.5, float(controls["epsilon_min"]), 0.01,
+                key=f"{p}_eps_min", help="Minimum exploration probability retained late in training.",
+            )
+            eps_decay = st.sidebar.number_input(
+                "Epsilon decay rate", 0.8, 1.0, float(controls["epsilon_decay"]),
+                format="%.4f", key=f"{p}_eps_decay",
+                help="Multiplier applied to epsilon after each episode; closer to 1 decays more slowly.",
+            )
+            episodes = st.sidebar.number_input(
+                "Training episodes", 10, 10000, int(controls["episodes"]), key=f"{p}_episodes",
+                help="Number of complete learning episodes to run.",
+            )
+            max_steps = st.sidebar.number_input(
+                "Max timesteps per episode", 10, 5000, int(controls["max_timesteps"]),
+                key=f"{p}_max_steps", help="Stops an episode that has not reached a termination state.",
+            )
+            seed = st.sidebar.number_input(
+                "Seed", 0, value=int(controls["seed"]), key=f"{p}_seed",
+                help="Controls reproducible exploration and stochastic transitions.",
+            )
+            live_update = st.sidebar.number_input(
+                "Update charts every N episodes", 1, 1000, int(controls["live_update_every"]),
+                key=f"{p}_live_update", help="Lower values refresh live charts more frequently.",
+            )
             st.session_state[f"{p}_training_controls"] = {
                 "alpha": float(alpha), "gamma": float(gamma),
                 "epsilon_start": float(eps_start), "epsilon_min": float(eps_min),
@@ -965,17 +1278,37 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
 
         if prob_err is not None:
             st.sidebar.error(f"Fix grid error: {prob_err}")
-        requests["train"] = st.sidebar.button("▶ Train / compute policy", type="primary", use_container_width=True, disabled=prob_err is not None, key=f"{p}_train_btn")
-        requests["reset"] = st.sidebar.button("Reset trained model", use_container_width=True, key=f"{p}_reset_btn")
+        requests["train"] = st.sidebar.button(
+            "▶ Train / compute policy", type="primary", use_container_width=True,
+            disabled=prob_err is not None, key=f"{p}_train_btn",
+            help="Starts training with the current grid, rewards, and hyperparameters.",
+        )
+        requests["reset"] = st.sidebar.button(
+            "Reset trained model", use_container_width=True, key=f"{p}_reset_btn",
+            help="Clears the trained policy and test results without changing the grid.",
+        )
 
     elif section == "Testing":
         controls = st.session_state[f"{p}_test_controls"]
         st.sidebar.subheader("Test configuration")
-        episodes = st.sidebar.number_input("Test episodes", 1, 10000, int(controls["episodes"]), key=f"{p}_test_episodes")
-        max_steps = st.sidebar.number_input("Max timesteps per episode", 1, 50000, int(controls["max_timesteps"]), key=f"{p}_test_max_steps")
-        seed = st.sidebar.number_input("Test seed", 0, value=int(controls["seed"]), key=f"{p}_test_seed")
+        episodes = st.sidebar.number_input(
+            "Test episodes", 1, 10000, int(controls["episodes"]), key=f"{p}_test_episodes",
+            help="Number of evaluation episodes run without learning.",
+        )
+        max_steps = st.sidebar.number_input(
+            "Max timesteps per episode", 1, 50000, int(controls["max_timesteps"]),
+            key=f"{p}_test_max_steps", help="Maximum length of each evaluation episode.",
+        )
+        seed = st.sidebar.number_input(
+            "Test seed", 0, value=int(controls["seed"]), key=f"{p}_test_seed",
+            help="Reproduces the same stochastic test outcomes when settings are unchanged.",
+        )
         st.session_state[f"{p}_test_controls"] = {"episodes": int(episodes), "max_timesteps": int(max_steps), "seed": int(seed)}
-        run_test = st.sidebar.button("🧪 Run test", type="primary", use_container_width=True, disabled=st.session_state[f"{p}_result"] is None, key=f"{p}_run_test_btn")
+        run_test = st.sidebar.button(
+            "🧪 Run test", type="primary", use_container_width=True,
+            disabled=st.session_state[f"{p}_result"] is None, key=f"{p}_run_test_btn",
+            help="Evaluates the current trained model without updating it.",
+        )
 
     else: # Models
         st.sidebar.subheader("Model artifact")
@@ -989,10 +1322,25 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
                 art = export_room2_artifact(env, config, res)
             else:
                 art = export_room3_artifact(env, config, res)
-            st.sidebar.download_button(f"⬇ Download Room {room_num} model", data=art, file_name=f"room{room_num}_model.json", mime="application/json", use_container_width=True)
+            st.sidebar.download_button(
+                f"⬇ Download Room {room_num} model",
+                data=art,
+                file_name=f"room{room_num}_model.json",
+                mime="application/json",
+                use_container_width=True,
+                help="Downloads the trained policy, environment layout, rewards, and hyperparameters as JSON.",
+            )
 
-        uploaded = st.sidebar.file_uploader("Upload model JSON", type=["json"], key=f"{p}_upload")
-        if uploaded is not None and st.sidebar.button("Load model", use_container_width=True, key=f"{p}_load_btn"):
+        uploaded = st.sidebar.file_uploader(
+            "Upload model JSON", type=["json"], key=f"{p}_upload",
+            help="Select a previously exported model artifact for this room and algorithm.",
+        )
+        if uploaded is not None and st.sidebar.button(
+            "Load model",
+            use_container_width=True,
+            key=f"{p}_load_btn",
+            help="Loads the uploaded artifact and restores its model and complete room configuration.",
+        ):
             try:
                 if room_num == 1:
                     env_l, config_l, res_l = import_room1_artifact(uploaded.getvalue().decode("utf-8"))
@@ -1006,8 +1354,14 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
                 st.session_state[f"{p}_result_environment"] = env_l
                 st.session_state[f"{p}_algorithm_config"] = config_l
                 st.session_state[f"{p}_result"] = res_l
+                st.session_state[f"{p}_start"] = env_l.config.start
+                st.session_state[f"{p}_goal"] = env_l.config.goal
                 st.session_state[f"{p}_walls"] = set(env_l.config.walls)
                 st.session_state[f"{p}_slippery"] = dict(env_l.config.slippery)
+                st.session_state[f"{p}_terminal_states"] = set(env_l.config.terminal_states)
+                st.session_state[f"{p}_cell_rewards"] = dict(env_l.config.cell_rewards)
+                st.session_state[f"{p}_probability_errors"] = set()
+                st.session_state[f"{p}_editor_nonce"] += 1
                 st.sidebar.success("Model loaded successfully!")
                 st.rerun()
 

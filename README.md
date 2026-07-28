@@ -5,13 +5,18 @@ A reinforcement-learning final project built as a four-room escape game. Each ro
 ## Current status
 
 - Task 0: shared system specification — complete.
-- Task 1: known-model grid room with Policy Iteration — initial implementation complete.
+- Task 1: known-model grid room with Policy Iteration — implemented and tested.
+- Rooms 2 and 3 are implemented with SARSA and Q-Learning.
 - The application UI and all runtime controls are in English.
 - A full-width button navigation bar switches between Rooms 1–4 from right to left, with no radio-button controls.
 - Each room has a dedicated left control bar for environment settings, rewards, hyperparameters, training, testing, and model management.
-- Room 1 includes a clickable 10x10 grid editor. Every non-terminal cell can be changed to Normal, Icy, or Wall; icy cells expose a five-outcome probability editor.
+- Rooms 1–3 include a clickable 10x10 grid editor. A cell popover controls its type, custom reward, termination behavior, and assignment as the dog start or main goal.
+- Icy transition probabilities are edited as whole percentages that must total 100%.
+- A single seeded generator creates the start, goal, walls, icy cells, and integer ice distributions together.
+- Every control includes contextual help, all charts identify both axes, and training charts are displayed side by side.
+- Test replays play automatically at a base rate of five timesteps per second with a selectable speed multiplier.
 
-Rooms 2–4 currently provide navigation-ready placeholder pages and will be connected as their environments and algorithms are implemented.
+Room 4 currently provides a navigation-ready placeholder page for the future continuous-space environment.
 
 ## Run locally
 

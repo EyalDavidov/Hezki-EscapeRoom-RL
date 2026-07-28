@@ -47,6 +47,16 @@ def render_grid_html(
                 if state in environment.config.slippery:
                     classes.append("slippery")
                     content = "❄️"
+                if state in environment.config.cell_rewards:
+                    classes.append("custom-reward")
+                    title_parts.append(
+                        f"cell reward={environment.config.cell_rewards[state]:.3f}"
+                    )
+                    if not content:
+                        content = "🎁"
+                if state in environment.config.terminal_states and state != environment.goal:
+                    classes.append("termination")
+                    content = "🛑"
                 if state == environment.start:
                     classes.append("start")
                     content = "🏁"
@@ -91,6 +101,8 @@ def render_grid_html(
       .room-cell.slippery {{ background: #dff6ff !important; }}
       .room-cell.start {{ outline: 3px solid #43a047; outline-offset: -3px; }}
       .room-cell.goal {{ outline: 3px solid #f9a825; outline-offset: -3px; }}
+      .room-cell.termination {{ outline: 3px solid #e11d48; outline-offset: -3px; }}
+      .room-cell.custom-reward {{ box-shadow: inset 0 0 0 3px #8b5cf6; }}
       .room-cell.agent {{ background: #fff3cd !important; }}
       .cell-main {{ line-height: 1; }}
       .cell-coordinate {{

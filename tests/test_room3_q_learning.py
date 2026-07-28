@@ -42,6 +42,8 @@ class Room3QLearningTests(unittest.TestCase):
     def test_room3_artifact_roundtrip(self) -> None:
         config_env = default_room3_config()
         config_env.slippery = {(1, 0): SlipperyCell()}
+        config_env.terminal_states = frozenset({config_env.goal, (4, 4)})
+        config_env.cell_rewards = {(1, 1): -0.75}
         env = Room3Environment(config_env)
         config = QLearningConfig(episodes=20, seed=15)
         result = run_q_learning(env, config)
@@ -50,6 +52,8 @@ class Room3QLearningTests(unittest.TestCase):
         loaded_env, loaded_config, loaded_result = import_room3_artifact(artifact)
 
         self.assertEqual(loaded_env.config.walls, config_env.walls)
+        self.assertEqual(loaded_env.config.terminal_states, config_env.terminal_states)
+        self.assertEqual(loaded_env.config.cell_rewards, config_env.cell_rewards)
         self.assertEqual(loaded_config, config)
         self.assertEqual(loaded_result.policy, result.policy)
 

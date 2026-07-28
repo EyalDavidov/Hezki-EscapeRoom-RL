@@ -70,6 +70,13 @@ def export_room1_artifact(
                 for state, slippery in sorted(environment.config.slippery.items())
             },
             "rewards": environment.config.rewards,
+            "terminal_states": [
+                list(state) for state in sorted(environment.config.terminal_states)
+            ],
+            "cell_rewards": {
+                state_key(state): reward
+                for state, reward in sorted(environment.config.cell_rewards.items())
+            },
         },
         "algorithm_config": asdict(algorithm_config),
         "result": {
@@ -111,6 +118,14 @@ def import_room1_artifact(
         rewards={
             str(event): float(value)
             for event, value in environment_data["rewards"].items()
+        },
+        terminal_states=frozenset(
+            tuple(state)
+            for state in environment_data.get("terminal_states", [environment_data["goal"]])
+        ),
+        cell_rewards={
+            parse_state(state): float(reward)
+            for state, reward in environment_data.get("cell_rewards", {}).items()
         },
     )
     environment = Room1Environment(room_config)
@@ -157,6 +172,13 @@ def export_room2_artifact(
                 for state, slippery in sorted(environment.config.slippery.items())
             },
             "rewards": environment.config.rewards,
+            "terminal_states": [
+                list(state) for state in sorted(environment.config.terminal_states)
+            ],
+            "cell_rewards": {
+                state_key(state): reward
+                for state, reward in sorted(environment.config.cell_rewards.items())
+            },
         },
         "algorithm_config": asdict(algorithm_config),
         "result": {
@@ -200,6 +222,14 @@ def import_room2_artifact(
         rewards={
             str(event): float(value)
             for event, value in environment_data["rewards"].items()
+        },
+        terminal_states=frozenset(
+            tuple(state)
+            for state in environment_data.get("terminal_states", [environment_data["goal"]])
+        ),
+        cell_rewards={
+            parse_state(state): float(reward)
+            for state, reward in environment_data.get("cell_rewards", {}).items()
         },
     )
     environment = Room2Environment(room_config)
@@ -254,6 +284,13 @@ def export_room3_artifact(
                 for state, slippery in sorted(environment.config.slippery.items())
             },
             "rewards": environment.config.rewards,
+            "terminal_states": [
+                list(state) for state in sorted(environment.config.terminal_states)
+            ],
+            "cell_rewards": {
+                state_key(state): reward
+                for state, reward in sorted(environment.config.cell_rewards.items())
+            },
         },
         "algorithm_config": asdict(algorithm_config),
         "result": {
@@ -297,6 +334,14 @@ def import_room3_artifact(
         rewards={
             str(event): float(value)
             for event, value in environment_data["rewards"].items()
+        },
+        terminal_states=frozenset(
+            tuple(state)
+            for state in environment_data.get("terminal_states", [environment_data["goal"]])
+        ),
+        cell_rewards={
+            parse_state(state): float(reward)
+            for state, reward in environment_data.get("cell_rewards", {}).items()
         },
     )
     environment = Room3Environment(room_config)

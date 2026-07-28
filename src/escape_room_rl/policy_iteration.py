@@ -88,7 +88,8 @@ def run_policy_iteration(
         for evaluation_sweep in range(1, config.max_evaluation_sweeps + 1):
             old_values = values.copy()
             new_values = old_values.copy()
-            new_values[environment.goal] = 0.0
+            for terminal_state in environment.terminal_states:
+                new_values[terminal_state] = 0.0
             for state in environment.non_terminal_states:
                 new_values[state] = action_value(
                     environment,

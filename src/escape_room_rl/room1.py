@@ -97,6 +97,18 @@ class Room1Config:
     walls: frozenset[State] = DEFAULT_WALLS
     slippery: dict[State, SlipperyCell] = field(default_factory=dict)
     rewards: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_REWARDS))
+    terminal_states: frozenset[State] = field(
+        default_factory=lambda: frozenset({(9, 9)})
+    )
+    cell_rewards: dict[State, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RandomGridLayout:
+    start: State
+    goal: State
+    walls: frozenset[State]
+    slippery: dict[State, SlipperyCell]
 
 
 @dataclass(frozen=True)
@@ -125,6 +137,13 @@ class Room1Environment:
         return self.config.goal
 
     @property
+    def terminal_states(self) -> frozenset[State]:
+        return self.config.terminal_states
+
+    def is_terminal(self, state: State) -> bool:
+        return state in self.terminal_states
+
+    @property
     def states(self) -> tuple[State, ...]:
         return tuple(
             (x, y)
@@ -135,7 +154,7 @@ class Room1Environment:
 
     @property
     def non_terminal_states(self) -> tuple[State, ...]:
-        return tuple(state for state in self.states if state != self.goal)
+        return tuple(state for state in self.states if not self.is_terminal(state))
 
     def in_bounds(self, state: State) -> bool:
         x, y = state
@@ -149,7 +168,7 @@ class Room1Environment:
         return state[0] + dx, state[1] + dy
 
     def legal_actions(self, state: State) -> tuple[Action, ...]:
-        if not self.is_walkable(state) or state == self.goal:
+        if not self.is_walkable(state) or self.is_terminal(state):
             return ()
         return tuple(
             action
@@ -205,12 +224,15 @@ class Room1Environment:
         complete_events = list(events)
         if next_state == self.goal:
             complete_events.append("goal_reached")
+        if self.is_terminal(next_state):
+            complete_events.append("termination_reached")
         reward = sum(self.config.rewards.get(event, 0.0) for event in complete_events)
+        reward += self.config.cell_rewards.get(next_state, 0.0)
         return Transition(
             probability=float(probability),
             next_state=next_state,
             reward=float(reward),
-            done=next_state == self.goal,
+            done=self.is_terminal(next_state),
             events=tuple(complete_events),
             outcome=outcome,
         )
@@ -218,20 +240,36 @@ class Room1Environment:
     def _validate_config(self) -> None:
         if self.config.width != 10 or self.config.height != 10:
             raise ValueError("Room 1 must be a 10x10 grid.")
-        if self.config.start != (0, 0) or self.config.goal != (9, 9):
-            raise ValueError("Room 1 start and goal must be (0, 0) and (9, 9).")
+        if not self.in_bounds(self.config.start) or not self.in_bounds(self.config.goal):
+            raise ValueError("Start and goal must be inside the grid.")
+        if self.config.start == self.config.goal:
+            raise ValueError("Start and goal must be different cells.")
         if not self.is_walkable(self.config.start) or not self.is_walkable(
             self.config.goal
         ):
             raise ValueError("Start and goal must be walkable.")
+        if self.config.goal not in self.terminal_states:
+            raise ValueError("The goal cell must be a termination state.")
+        if self.config.start in self.terminal_states:
+            raise ValueError("The start cell cannot be a termination state.")
+        invalid_terminals = [
+            state for state in self.terminal_states if not self.is_walkable(state)
+        ]
+        if invalid_terminals:
+            raise ValueError(f"Termination states must be walkable: {invalid_terminals}")
         invalid_walls = [wall for wall in self.config.walls if not self.in_bounds(wall)]
         if invalid_walls:
             raise ValueError(f"Walls outside the grid: {invalid_walls}")
         for state in self.config.slippery:
             if not self.is_walkable(state):
                 raise ValueError(f"Slippery cell {state} is not walkable.")
-            if state in (self.config.start, self.config.goal):
-                raise ValueError("Start and goal cannot be slippery.")
+            if state in {self.config.start, *self.terminal_states}:
+                raise ValueError("Start and termination cells cannot be slippery.")
+        invalid_cell_rewards = [
+            state for state in self.config.cell_rewards if not self.is_walkable(state)
+        ]
+        if invalid_cell_rewards:
+            raise ValueError(f"Cell rewards must belong to walkable cells: {invalid_cell_rewards}")
         unknown_rewards = set(self.config.rewards) - set(SUPPORTED_REWARD_EVENTS)
         if unknown_rewards:
             raise ValueError(f"Unknown reward events: {sorted(unknown_rewards)}")
@@ -260,7 +298,9 @@ def slippery_candidates(config: Room1Config) -> tuple[State, ...]:
         (x, y)
         for x in range(config.width)
         for y in range(config.height)
-        if (x, y) not in config.walls and (x, y) not in (config.start, config.goal)
+        if (x, y) not in config.walls
+        and (x, y) != config.start
+        and (x, y) not in config.terminal_states
     )
 
 
@@ -279,8 +319,65 @@ def generate_random_slippery_cells(
     result: dict[State, SlipperyCell] = {}
     for index in np.atleast_1d(indexes):
         state = candidates[int(index)]
-        probabilities = rng.dirichlet(np.ones(len(SLIP_OUTCOMES)))
+        probabilities = rng.multinomial(100, np.full(len(SLIP_OUTCOMES), 0.2)) / 100.0
         result[state] = SlipperyCell(
             **dict(zip(SLIP_OUTCOMES, probabilities, strict=True))
         )
     return result
+
+
+def generate_random_grid_layout(
+    wall_count: int,
+    slippery_count: int,
+    seed: int,
+) -> RandomGridLayout:
+    """Generate a reproducible, traversable grid including start, goal, walls and ice."""
+
+    if wall_count < 0 or slippery_count < 0:
+        raise ValueError("Wall and icy-cell counts cannot be negative.")
+    if wall_count + slippery_count + 2 > 100:
+        raise ValueError("The requested layout uses more than 100 cells.")
+
+    rng = np.random.default_rng(seed)
+    cells = [(x, y) for x in range(10) for y in range(10)]
+    for _attempt in range(1_000):
+        order = rng.permutation(len(cells))
+        start = cells[int(order[0])]
+        goal = cells[int(order[1])]
+        walls = frozenset(cells[int(index)] for index in order[2 : 2 + wall_count])
+
+        frontier = [start]
+        visited = {start}
+        while frontier:
+            state = frontier.pop()
+            for dx, dy in ACTION_DELTAS.values():
+                neighbor = state[0] + dx, state[1] + dy
+                if (
+                    0 <= neighbor[0] < 10
+                    and 0 <= neighbor[1] < 10
+                    and neighbor not in walls
+                    and neighbor not in visited
+                ):
+                    visited.add(neighbor)
+                    frontier.append(neighbor)
+        if goal not in visited:
+            continue
+
+        available = [
+            state for state in cells if state not in walls and state not in {start, goal}
+        ]
+        chosen = rng.choice(len(available), size=slippery_count, replace=False)
+        slippery: dict[State, SlipperyCell] = {}
+        for index in np.atleast_1d(chosen):
+            percentages = rng.multinomial(100, np.full(len(SLIP_OUTCOMES), 0.2))
+            slippery[available[int(index)]] = SlipperyCell(
+                **{
+                    outcome: int(value) / 100.0
+                    for outcome, value in zip(
+                        SLIP_OUTCOMES, percentages, strict=True
+                    )
+                }
+            )
+        return RandomGridLayout(start, goal, walls, slippery)
+
+    raise ValueError("Could not generate a traversable grid with these counts.")

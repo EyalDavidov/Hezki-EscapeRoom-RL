@@ -18,6 +18,7 @@ from escape_room_rl.room1 import (
     Room1Environment,
     SlipperyCell,
     default_room1_config,
+    generate_random_grid_layout,
     generate_random_slippery_cells,
 )
 
@@ -101,6 +102,41 @@ class Room1EnvironmentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "goal is unreachable"):
             Room1Environment(config)
 
+    def test_custom_start_goal_termination_and_cell_reward(self) -> None:
+        config = default_room1_config()
+        config.start = (1, 0)
+        config.goal = (8, 9)
+        config.terminal_states = frozenset({(8, 9), (4, 4)})
+        config.cell_rewards = {(1, 1): 2.5}
+        environment = Room1Environment(config)
+
+        rewarded = environment.transition_model((0, 1), Action.LEFT)[0]
+        self.assertAlmostEqual(rewarded.reward, 2.4)
+        termination = environment.transition_model((3, 4), Action.LEFT)[0]
+        self.assertTrue(termination.done)
+        self.assertNotEqual(termination.next_state, environment.goal)
+
+    def test_full_grid_generator_is_reproducible_and_uses_integer_percentages(self) -> None:
+        first = generate_random_grid_layout(20, 8, 91)
+        second = generate_random_grid_layout(20, 8, 91)
+        self.assertEqual(first, second)
+        self.assertEqual(len(first.walls), 20)
+        self.assertEqual(len(first.slippery), 8)
+        self.assertNotEqual(first.start, first.goal)
+        for slippery in first.slippery.values():
+            percentages = [value * 100 for value in slippery.as_dict().values()]
+            self.assertTrue(all(value.is_integer() for value in percentages))
+            self.assertEqual(sum(percentages), 100)
+        Room1Environment(
+            Room1Config(
+                start=first.start,
+                goal=first.goal,
+                walls=first.walls,
+                slippery=first.slippery,
+                terminal_states=frozenset({first.goal}),
+            )
+        )
+
 
 class PolicyIterationTests(unittest.TestCase):
     def test_policy_iteration_converges_and_solves_default_room(self) -> None:
@@ -124,6 +160,8 @@ class PolicyIterationTests(unittest.TestCase):
     def test_artifact_round_trip_preserves_model(self) -> None:
         config = default_room1_config()
         config.slippery = generate_random_slippery_cells(config, 5, 12)
+        config.cell_rewards = {(1, 1): 1.25}
+        config.terminal_states = frozenset({config.goal, (4, 4)})
         environment = Room1Environment(config)
         algorithm_config = PolicyIterationConfig(seed=12)
         result = run_policy_iteration(environment, algorithm_config)
@@ -132,6 +170,8 @@ class PolicyIterationTests(unittest.TestCase):
         self.assertEqual(loaded_environment.config.walls, config.walls)
         self.assertEqual(loaded_environment.config.slippery, config.slippery)
         self.assertEqual(loaded_environment.config.rewards, config.rewards)
+        self.assertEqual(loaded_environment.config.terminal_states, config.terminal_states)
+        self.assertEqual(loaded_environment.config.cell_rewards, config.cell_rewards)
         self.assertEqual(loaded_config, algorithm_config)
         self.assertEqual(loaded_result.policy, result.policy)
         for state, value in result.values.items():

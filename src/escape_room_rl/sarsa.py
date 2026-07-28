@@ -84,7 +84,7 @@ def derive_policy_and_values(
     values: dict[State, float] = {}
 
     for state in environment.states:
-        if state == environment.goal:
+        if environment.is_terminal(state):
             values[state] = 0.0
             continue
         legal = environment.legal_actions(state)
@@ -152,7 +152,7 @@ def run_sarsa(
             max_delta = max(max_delta, abs(new_q - old_q))
 
             if transition.done:
-                success = True
+                success = next_state == environment.goal
                 break
 
             state = next_state

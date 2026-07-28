@@ -46,6 +46,8 @@ class Room2SarsaTests(unittest.TestCase):
     def test_room2_artifact_roundtrip(self) -> None:
         config_env = default_room2_config()
         config_env.slippery = {(1, 0): SlipperyCell()}
+        config_env.terminal_states = frozenset({config_env.goal, (4, 4)})
+        config_env.cell_rewards = {(1, 1): 1.25}
         env = Room2Environment(config_env)
         config = SarsaConfig(episodes=20, seed=7)
         result = run_sarsa(env, config)
@@ -54,6 +56,8 @@ class Room2SarsaTests(unittest.TestCase):
         loaded_env, loaded_config, loaded_result = import_room2_artifact(artifact)
 
         self.assertEqual(loaded_env.config.walls, config_env.walls)
+        self.assertEqual(loaded_env.config.terminal_states, config_env.terminal_states)
+        self.assertEqual(loaded_env.config.cell_rewards, config_env.cell_rewards)
         self.assertEqual(loaded_config, config)
         self.assertEqual(loaded_result.policy, result.policy)
 

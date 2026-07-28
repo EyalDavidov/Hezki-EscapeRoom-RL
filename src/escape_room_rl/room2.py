@@ -42,6 +42,8 @@ class Room2Config:
     walls: frozenset[State] = DEFAULT_ROOM2_WALLS
     slippery: dict[State, SlipperyCell] = field(default_factory=dict)
     rewards: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_ROOM2_REWARDS))
+    terminal_states: frozenset[State] = field(default_factory=lambda: frozenset({(9, 9)}))
+    cell_rewards: dict[State, float] = field(default_factory=dict)
 
 
 class Room2Environment:
@@ -60,6 +62,13 @@ class Room2Environment:
         return self.config.goal
 
     @property
+    def terminal_states(self) -> frozenset[State]:
+        return self.config.terminal_states
+
+    def is_terminal(self, state: State) -> bool:
+        return state in self.terminal_states
+
+    @property
     def states(self) -> tuple[State, ...]:
         return tuple(
             (x, y)
@@ -70,7 +79,7 @@ class Room2Environment:
 
     @property
     def non_terminal_states(self) -> tuple[State, ...]:
-        return tuple(state for state in self.states if state != self.goal)
+        return tuple(state for state in self.states if not self.is_terminal(state))
 
     def in_bounds(self, state: State) -> bool:
         x, y = state
@@ -84,7 +93,7 @@ class Room2Environment:
         return state[0] + dx, state[1] + dy
 
     def legal_actions(self, state: State) -> tuple[Action, ...]:
-        if not self.is_walkable(state) or state == self.goal:
+        if not self.is_walkable(state) or self.is_terminal(state):
             return ()
         return tuple(
             action
@@ -134,12 +143,15 @@ class Room2Environment:
         complete_events = list(events)
         if next_state == self.goal:
             complete_events.append("goal_reached")
+        if self.is_terminal(next_state):
+            complete_events.append("termination_reached")
         reward = sum(self.config.rewards.get(event, 0.0) for event in complete_events)
+        reward += self.config.cell_rewards.get(next_state, 0.0)
         return Transition(
             probability=float(probability),
             next_state=next_state,
             reward=float(reward),
-            done=next_state == self.goal,
+            done=self.is_terminal(next_state),
             events=tuple(complete_events),
             outcome=outcome,
         )
@@ -147,18 +159,30 @@ class Room2Environment:
     def _validate_config(self) -> None:
         if self.config.width != 10 or self.config.height != 10:
             raise ValueError("Room 2 must be a 10x10 grid.")
-        if self.config.start != (0, 0) or self.config.goal != (9, 9):
-            raise ValueError("Room 2 start and goal must be (0, 0) and (9, 9).")
+        if not self.in_bounds(self.config.start) or not self.in_bounds(self.config.goal):
+            raise ValueError("Start and goal must be inside the grid.")
+        if self.config.start == self.config.goal:
+            raise ValueError("Start and goal must be different cells.")
         if not self.is_walkable(self.config.start) or not self.is_walkable(self.config.goal):
             raise ValueError("Start and goal must be walkable.")
+        if self.config.goal not in self.terminal_states:
+            raise ValueError("The goal cell must be a termination state.")
+        if self.config.start in self.terminal_states:
+            raise ValueError("The start cell cannot be a termination state.")
+        invalid_terminals = [state for state in self.terminal_states if not self.is_walkable(state)]
+        if invalid_terminals:
+            raise ValueError(f"Termination states must be walkable: {invalid_terminals}")
         invalid_walls = [wall for wall in self.config.walls if not self.in_bounds(wall)]
         if invalid_walls:
             raise ValueError(f"Walls outside the grid: {invalid_walls}")
         for state in self.config.slippery:
             if not self.is_walkable(state):
                 raise ValueError(f"Slippery cell {state} is not walkable.")
-            if state in (self.config.start, self.config.goal):
-                raise ValueError("Start and goal cannot be slippery.")
+            if state in {self.config.start, *self.terminal_states}:
+                raise ValueError("Start and termination cells cannot be slippery.")
+        invalid_cell_rewards = [state for state in self.config.cell_rewards if not self.is_walkable(state)]
+        if invalid_cell_rewards:
+            raise ValueError(f"Cell rewards must belong to walkable cells: {invalid_cell_rewards}")
         unknown_rewards = set(self.config.rewards) - set(SUPPORTED_REWARD_EVENTS)
         if unknown_rewards:
             raise ValueError(f"Unknown reward events: {sorted(unknown_rewards)}")
