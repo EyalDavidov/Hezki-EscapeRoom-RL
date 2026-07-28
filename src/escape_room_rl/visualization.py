@@ -5,6 +5,7 @@ from __future__ import annotations
 from html import escape
 
 from typing import Any
+from .display_formatting import format_reward_label, reward_sign_class
 from .room1 import Action, State
 
 ACTION_ARROWS = {
@@ -33,6 +34,7 @@ def render_grid_html(
             state = (x, y)
             classes = ["room-cell"]
             content = ""
+            reward_label = ""
             title_parts = [f"({x}, {y})"]
             style = ""
             if state in environment.config.walls:
@@ -49,11 +51,14 @@ def render_grid_html(
                     content = "❄️"
                 if state in environment.config.cell_rewards:
                     classes.append("custom-reward")
+                    cell_reward = environment.config.cell_rewards[state]
                     title_parts.append(
-                        f"cell reward={environment.config.cell_rewards[state]:.3f}"
+                        f"cell reward={cell_reward:.3f}"
                     )
-                    if not content:
-                        content = "🎁"
+                    reward_label = (
+                        f'<span class="cell-reward {reward_sign_class(cell_reward)}">'
+                        f'{escape(format_reward_label(cell_reward))}</span>'
+                    )
                 if state in environment.config.terminal_states and state != environment.goal:
                     classes.append("termination")
                     content = "🛑"
@@ -69,6 +74,7 @@ def render_grid_html(
                     classes.append("agent")
                     content = "🐕"
             label = f'<span class="cell-main">{escape(content)}</span>'
+            label += reward_label
             label += f'<span class="cell-coordinate">{x},{y}</span>'
             cells.append(
                 f'<div class="{" ".join(classes)}" style="{style}" '
@@ -102,9 +108,29 @@ def render_grid_html(
       .room-cell.start {{ outline: 3px solid #43a047; outline-offset: -3px; }}
       .room-cell.goal {{ outline: 3px solid #f9a825; outline-offset: -3px; }}
       .room-cell.termination {{ outline: 3px solid #e11d48; outline-offset: -3px; }}
-      .room-cell.custom-reward {{ box-shadow: inset 0 0 0 3px #8b5cf6; }}
       .room-cell.agent {{ background: #fff3cd !important; }}
       .cell-main {{ line-height: 1; }}
+      .cell-reward {{
+        position: absolute;
+        top: 4px;
+        left: 4px;
+        padding: 2px 4px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.88);
+        font-size: clamp(10px, 1.2vw, 15px);
+        font-weight: 800;
+        line-height: 1;
+        letter-spacing: -0.02em;
+      }}
+      .cell-main:empty + .cell-reward {{
+        position: static;
+        padding: 0;
+        background: transparent;
+        font-size: clamp(14px, 1.7vw, 21px);
+      }}
+      .reward-positive {{ color: #15803d; }}
+      .reward-negative {{ color: #dc2626; }}
+      .reward-neutral {{ color: #475569; }}
       .cell-coordinate {{
         position: absolute;
         bottom: 1px;

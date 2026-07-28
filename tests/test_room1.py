@@ -21,9 +21,34 @@ from escape_room_rl.room1 import (
     generate_random_grid_layout,
     generate_random_slippery_cells,
 )
+from escape_room_rl.display_formatting import format_reward_label
+from escape_room_rl.visualization import render_grid_html
 
 
 class Room1EnvironmentTests(unittest.TestCase):
+    def test_reward_labels_use_signed_colored_numbers(self) -> None:
+        config = default_room1_config()
+        config.slippery = {(1, 0): SlipperyCell()}
+        config.terminal_states = frozenset({config.goal, (4, 4)})
+        config.cell_rewards = {
+            (1, 0): 1.5,
+            config.goal: 2.5,
+            (4, 4): -0.75,
+        }
+        environment = Room1Environment(config)
+
+        rendered = render_grid_html(environment)
+
+        self.assertEqual(format_reward_label(2.5), "+2.5")
+        self.assertEqual(format_reward_label(-0.75), "-0.75")
+        self.assertIn("❄️", rendered)
+        self.assertIn('class="cell-reward reward-positive">+1.5</span>', rendered)
+        self.assertIn('class="cell-reward reward-positive">+2.5</span>', rendered)
+        self.assertIn('class="cell-reward reward-negative">-0.75</span>', rendered)
+        self.assertIn("🚪", rendered)
+        self.assertIn("🛑", rendered)
+        self.assertNotIn("🎁", rendered)
+
     def test_coordinate_convention_and_boundary_actions(self) -> None:
         environment = Room1Environment(default_room1_config())
         self.assertEqual(environment.start, (0, 0))

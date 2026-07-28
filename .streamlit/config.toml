@@ -1,0 +1,3 @@
+[client]
+# Keep Streamlit's native toolbar and Deploy option visible in local development.
+toolbarMode = "developer"

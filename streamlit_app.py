@@ -59,6 +59,10 @@ from escape_room_rl.room3 import (  # noqa: E402
     Room3Config,
     Room3Environment,
 )
+from escape_room_rl.display_formatting import (  # noqa: E402
+    format_reward_label,
+    reward_sign_class,
+)
 from escape_room_rl.visualization import render_grid_html  # noqa: E402
 
 
@@ -72,62 +76,93 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+      :root {
+        --app-nav-height: 3.75rem;
+      }
       header[data-testid="stHeader"] {
-        display: none !important;
-      }
-      [data-testid="stAppViewContainer"] {
-        overflow: auto !important;
-      }
-      [data-testid="stMain"] {
-        overflow: visible !important;
+        top: var(--app-nav-height) !important;
       }
       [data-testid="stMainBlockContainer"] {
         max-width: 100% !important;
-        padding-top: 0rem !important;
+        padding-top: 8rem !important;
         padding-left: 2.5rem !important;
         padding-right: 2.5rem !important;
-        overflow: visible !important;
       }
       [data-testid="stSidebar"] {
         min-width: 340px;
         max-width: 340px;
+        top: var(--app-nav-height) !important;
+        height: calc(100vh - var(--app-nav-height)) !important;
       }
       [data-testid="stSidebar"] h1,
       [data-testid="stSidebar"] h2,
       [data-testid="stSidebar"] h3 { letter-spacing: -0.02em; }
 
-      /* Sticky Top Navigation Bar */
+      /* Full-viewport application navigation above both app columns. */
       div:has(> .st-key-main_top_nav) {
-        position: sticky !important;
-        top: 0 !important;
-        z-index: 9999 !important;
+        position: fixed !important;
+        inset: 0 0 auto 0 !important;
+        width: 100vw !important;
+        height: var(--app-nav-height) !important;
+        z-index: 1000000 !important;
+        margin: 0 !important;
         overflow: visible !important;
       }
       .st-key-main_top_nav {
-        position: sticky !important;
-        top: 0 !important;
-        z-index: 9999 !important;
-        margin-left: -2.5rem !important;
-        margin-right: -2.5rem !important;
-        margin-top: 0 !important;
-        padding: 0.85rem 2.5rem !important;
-        background: #121620 !important;
+        position: static !important;
+        width: 100% !important;
+        height: var(--app-nav-height) !important;
+        margin: 0 !important;
+        padding: 0.55rem 1.25rem !important;
+        background: linear-gradient(90deg, #0f172a, #111827) !important;
         border-bottom: 1px solid rgba(255, 255, 255, 0.12) !important;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4) !important;
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.32) !important;
         backdrop-filter: blur(16px) !important;
-        margin-bottom: 1.75rem !important;
+        box-sizing: border-box !important;
       }
       .st-key-main_top_nav [data-testid="stHorizontalBlock"] {
-        gap: 1rem !important;
+        height: 100% !important;
+        gap: 0.55rem !important;
         align-items: center !important;
       }
+      .st-key-nav_brand {
+        flex: 1 1 auto !important;
+        min-width: 250px !important;
+      }
+      .nav-brand {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        min-height: 2.55rem;
+        color: #f8fafc;
+        white-space: nowrap;
+      }
+      .nav-logo {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2.15rem;
+        height: 2.15rem;
+        border-radius: 0.65rem;
+        background: linear-gradient(135deg, #2563eb, #14b8a6);
+        box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);
+        font-size: 1.15rem;
+        line-height: 1;
+      }
+      .nav-project-name {
+        font-size: 1rem;
+        font-weight: 750;
+        letter-spacing: -0.01em;
+      }
       .st-key-main_top_nav button {
-        width: 100% !important;
-        min-height: 3.1rem !important;
-        border-radius: 0.65rem !important;
-        font-size: 1.05rem !important;
-        font-weight: 700 !important;
-        letter-spacing: 0.02em !important;
+        width: auto !important;
+        min-width: 5.2rem !important;
+        min-height: 2.35rem !important;
+        padding: 0.35rem 0.9rem !important;
+        border-radius: 999px !important;
+        font-size: 0.88rem !important;
+        font-weight: 650 !important;
+        letter-spacing: 0.01em !important;
         transition: all 0.2s ease-in-out !important;
       }
       .st-key-main_top_nav button[data-testid="stBaseButton-primary"] {
@@ -369,19 +404,30 @@ def test_dataframe(results) -> pd.DataFrame:
 def render_room_navigation() -> str:
     rooms = ["Room 1", "Room 2", "Room 3", "Room 4"]
     active_room = st.session_state.active_room
-    with st.container(key="main_top_nav"):
-        columns = st.columns(4, gap="small")
-        for column, room in zip(columns, reversed(rooms), strict=True):
-            with column:
-                selected = st.button(
-                    room,
-                    key=f"navigate_{room.lower().replace(' ', '_')}",
-                    type="primary" if room == active_room else "secondary",
-                    use_container_width=True,
-                )
-                if selected and room != active_room:
-                    st.session_state.active_room = room
-                    st.rerun()
+    with st.container(
+        key="main_top_nav",
+        horizontal=True,
+        vertical_alignment="center",
+        gap="small",
+    ):
+        with st.container(key="nav_brand"):
+            st.markdown(
+                '<div class="nav-brand">'
+                '<span class="nav-logo" aria-hidden="true">🐾</span>'
+                '<span class="nav-project-name">Hezki Escape Room RL</span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+        for room in reversed(rooms):
+            selected = st.button(
+                room,
+                key=f"navigate_{room.lower().replace(' ', '_')}",
+                type="primary" if room == active_room else "secondary",
+                width="content",
+            )
+            if selected and room != active_room:
+                st.session_state.active_room = room
+                st.rerun()
     return st.session_state.active_room
 
 
@@ -548,6 +594,9 @@ def render_grid_editor(room_num: int) -> None:
             background = "#f7f9fb"
             coordinate_color = "#263238"
             outline = "none"
+            main_color = "inherit"
+            main_font_size = "clamp(18px, 2.2vw, 30px)"
+            main_font_weight = "400"
             if state == start:
                 icon = "🐕"
                 background = "#fff3cd"
@@ -567,17 +616,52 @@ def render_grid_editor(room_num: int) -> None:
                 icon = "❄️"
                 background = "#dff6ff"
             elif state in cell_rewards:
-                icon = "🎁"
-                background = "#f3e8ff"
+                reward_value = cell_rewards[state]
+                icon = format_reward_label(reward_value)
+                sign_class = reward_sign_class(reward_value)
+                main_color = {
+                    "reward-positive": "#15803d",
+                    "reward-negative": "#dc2626",
+                    "reward-neutral": "#475569",
+                }[sign_class]
+                background = {
+                    "reward-positive": "#ecfdf5",
+                    "reward-negative": "#fef2f2",
+                    "reward-neutral": "#f8fafc",
+                }[sign_class]
+                main_font_size = "clamp(13px, 1.55vw, 20px)"
+                main_font_weight = "800"
 
             selector = f'.st-key-{p}_cell_{x}_{y} [data-testid="stPopover"] button'
-            cell_styles.extend(
-                [
-                    f'{selector} {{ background: {background} !important; box-shadow: {outline}; }}',
-                    f'{selector}::before {{ content: "{icon}"; }}',
-                    f'{selector}::after {{ content: "{x},{y}"; color: {coordinate_color}; }}',
-                ]
+            styles_for_cell = [
+                f'{selector} {{ background: {background} !important; box-shadow: {outline}; }}',
+                (
+                    f'{selector}::before {{ content: "{icon}"; color: {main_color}; '
+                    f'font-size: {main_font_size} !important; font-weight: {main_font_weight}; }}'
+                ),
+                f'{selector}::after {{ content: "{x},{y}"; color: {coordinate_color}; }}',
+            ]
+            reward_has_separate_state_marker = state in cell_rewards and (
+                state in {start, goal}
+                or state in terminals
+                or cell_type == "Icy"
             )
+            if reward_has_separate_state_marker:
+                reward_value = cell_rewards[state]
+                reward_color = {
+                    "reward-positive": "#15803d",
+                    "reward-negative": "#dc2626",
+                    "reward-neutral": "#475569",
+                }[reward_sign_class(reward_value)]
+                styles_for_cell.append(
+                    f'{selector} p::before {{ content: "{format_reward_label(reward_value)}"; '
+                    f'position: absolute; top: 4px; left: 4px; z-index: 3; '
+                    f'padding: 2px 4px; border-radius: 4px; '
+                    f'background: rgba(255, 255, 255, 0.9); color: {reward_color}; '
+                    f'font-size: clamp(10px, 1.15vw, 14px) !important; '
+                    f'font-weight: 800; line-height: 1; }}'
+                )
+            cell_styles.extend(styles_for_cell)
     st.markdown(f"<style>{''.join(cell_styles)}</style>", unsafe_allow_html=True)
 
     with st.container(key="grid_editor"):
@@ -592,9 +676,15 @@ def render_grid_editor(room_num: int) -> None:
                 elif state in terminals:
                     cell_label = f"🛑 {x},{y}"
                 elif state in cell_rewards and current_cell_type(room_num, state) == "Normal":
-                    cell_label = f"🎁 {x},{y}"
+                    cell_label = f"{format_reward_label(cell_rewards[state])} reward {x},{y}"
                 else:
                     cell_label = f"{icon_by_type[current_cell_type(room_num, state)]} {x},{y}"
+                if state in cell_rewards and (
+                    state in {start, goal}
+                    or state in terminals
+                    or current_cell_type(room_num, state) == "Icy"
+                ):
+                    cell_label += f" {format_reward_label(cell_rewards[state])} reward"
 
                 with column:
                     with st.container(key=f"{p}_cell_{x}_{y}"):
@@ -743,7 +833,8 @@ def render_environment_page(room_num: int) -> None:
         '<span class="legend-item">🧱 Wall</span>'
         '<span class="legend-item">❄️ Icy cell</span>'
         '<span class="legend-item">🛑 Termination</span>'
-        '<span class="legend-item">🎁 Custom reward</span>'
+        '<span class="legend-item"><span style="color:#15803d;font-weight:800">+R</span> / '
+        '<span style="color:#dc2626;font-weight:800">−R</span> Cell reward</span>'
         '</div>',
         unsafe_allow_html=True,
     )
