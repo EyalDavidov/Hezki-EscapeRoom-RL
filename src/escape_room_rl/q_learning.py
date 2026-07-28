@@ -1,0 +1,185 @@
+"""Q-Learning (Off-Policy TD Control) for Room 3."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Callable
+import numpy as np
+
+from .room1 import Action, State
+from .room3 import Room3Environment
+
+
+@dataclass(frozen=True)
+class QLearningConfig:
+    alpha: float = 0.1
+    gamma: float = 0.95
+    epsilon_start: float = 1.0
+    epsilon_min: float = 0.05
+    epsilon_decay: float = 0.995
+    episodes: int = 500
+    max_timesteps: int = 250
+    seed: int = 42
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.alpha <= 1.0:
+            raise ValueError("alpha must be in (0, 1].")
+        if not 0.0 <= self.gamma < 1.0:
+            raise ValueError("gamma must be in [0, 1).")
+        if not 0.0 <= self.epsilon_min <= self.epsilon_start <= 1.0:
+            raise ValueError("Invalid epsilon parameters.")
+        if not 0.0 < self.epsilon_decay <= 1.0:
+            raise ValueError("epsilon_decay must be in (0, 1].")
+        if self.episodes <= 0 or self.max_timesteps <= 0:
+            raise ValueError("episodes and max_timesteps must be positive.")
+
+
+@dataclass(frozen=True)
+class QLearningTrainingMetric:
+    episode: int
+    total_reward: float
+    timesteps: int
+    success: bool
+    epsilon: float
+    max_q_delta: float
+    mean_q_value: float
+
+
+@dataclass
+class QLearningResult:
+    q_table: dict[tuple[State, Action], float]
+    policy: dict[State, Action]
+    values: dict[State, float]
+    metrics: list[QLearningTrainingMetric] = field(default_factory=list)
+    converged: bool = False
+    episodes_run: int = 0
+
+
+QLearningCallback = Callable[[QLearningTrainingMetric, dict[State, float], dict[State, Action]], None]
+
+
+def select_epsilon_greedy_action(
+    q_table: dict[tuple[State, Action], float],
+    legal_actions: tuple[Action, ...],
+    state: State,
+    epsilon: float,
+    rng: np.random.Generator,
+) -> Action:
+    if not legal_actions:
+        raise ValueError(f"No legal actions available from state {state}")
+    if rng.random() < epsilon:
+        return legal_actions[int(rng.integers(0, len(legal_actions)))]
+
+    q_vals = [q_table.get((state, a), 0.0) for a in legal_actions]
+    max_val = max(q_vals)
+    best_actions = [a for a, val in zip(legal_actions, q_vals) if np.isclose(val, max_val, atol=1e-12)]
+    return best_actions[int(rng.integers(0, len(best_actions)))]
+
+
+def derive_policy_and_values(
+    environment: Room3Environment,
+    q_table: dict[tuple[State, Action], float],
+) -> tuple[dict[State, Action], dict[State, float]]:
+    policy: dict[State, Action] = {}
+    values: dict[State, float] = {}
+
+    for state in environment.states:
+        if state == environment.goal:
+            values[state] = 0.0
+            continue
+        legal = environment.legal_actions(state)
+        if not legal:
+            values[state] = 0.0
+            continue
+        q_vals = {action: q_table.get((state, action), 0.0) for action in legal}
+        best_val = max(q_vals.values())
+        best_actions = [a for a, val in q_vals.items() if np.isclose(val, best_val, atol=1e-12)]
+        policy[state] = best_actions[0]
+        values[state] = float(best_val)
+
+    return policy, values
+
+
+def run_q_learning(
+    environment: Room3Environment,
+    config: QLearningConfig,
+    callback: QLearningCallback | None = None,
+) -> QLearningResult:
+    rng = np.random.default_rng(config.seed)
+    q_table: dict[tuple[State, Action], float] = {}
+
+    # Initialize Q-table to 0.0 for all valid state-action pairs
+    for state in environment.states:
+        for action in environment.legal_actions(state):
+            q_table[(state, action)] = 0.0
+
+    metrics: list[QLearningTrainingMetric] = []
+    epsilon = config.epsilon_start
+
+    for episode in range(1, config.episodes + 1):
+        state = environment.start
+        total_reward = 0.0
+        max_delta = 0.0
+        timesteps = 0
+        success = False
+
+        for _ in range(config.max_timesteps):
+            legal = environment.legal_actions(state)
+            if not legal:
+                break
+            action = select_epsilon_greedy_action(q_table, legal, state, epsilon, rng)
+
+            timesteps += 1
+            transition = environment.step(state, action, rng)
+            next_state = transition.next_state
+            reward = transition.reward
+            total_reward += reward
+
+            old_q = q_table.get((state, action), 0.0)
+
+            if transition.done:
+                max_next_q = 0.0
+            else:
+                next_legal = environment.legal_actions(next_state)
+                max_next_q = max(q_table.get((next_state, a), 0.0) for a in next_legal) if next_legal else 0.0
+
+            target = reward + config.gamma * max_next_q
+            new_q = old_q + config.alpha * (target - old_q)
+            q_table[(state, action)] = float(new_q)
+            max_delta = max(max_delta, abs(new_q - old_q))
+
+            if transition.done:
+                success = True
+                break
+
+            state = next_state
+
+        # Decay epsilon after episode
+        epsilon = max(config.epsilon_min, epsilon * config.epsilon_decay)
+
+        policy, values = derive_policy_and_values(environment, q_table)
+        mean_q = float(np.mean(list(q_table.values()))) if q_table else 0.0
+
+        metric = QLearningTrainingMetric(
+            episode=episode,
+            total_reward=float(total_reward),
+            timesteps=timesteps,
+            success=success,
+            epsilon=float(epsilon),
+            max_q_delta=float(max_delta),
+            mean_q_value=mean_q,
+        )
+        metrics.append(metric)
+
+        if callback is not None:
+            callback(metric, values, policy)
+
+    policy, values = derive_policy_and_values(environment, q_table)
+    return QLearningResult(
+        q_table=q_table,
+        policy=policy,
+        values=values,
+        metrics=metrics,
+        converged=any(m.success for m in metrics[-20:]),
+        episodes_run=config.episodes,
+    )

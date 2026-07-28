@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .room1 import Action, Room1Environment, State
+from typing import Any
+from .room1 import Action, State
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,7 @@ class EpisodeResult:
 
 
 def evaluate_policy(
-    environment: Room1Environment,
+    environment: Any,
     policy: dict[State, Action],
     episodes: int,
     max_timesteps: int,

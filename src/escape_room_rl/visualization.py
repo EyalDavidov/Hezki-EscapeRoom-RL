@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from html import escape
 
-from .room1 import Action, Room1Environment, State
+from typing import Any
+from .room1 import Action, State
 
 ACTION_ARROWS = {
     Action.UP: "↑",
@@ -15,7 +16,7 @@ ACTION_ARROWS = {
 
 
 def render_grid_html(
-    environment: Room1Environment,
+    environment: Any,
     agent_state: State | None = None,
     policy: dict[State, Action] | None = None,
     values: dict[State, float] | None = None,
