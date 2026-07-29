@@ -410,3 +410,134 @@ def import_room3_artifact(
         episodes_run=int(result_data["episodes_run"]),
     )
     return environment, algorithm_config, result
+
+
+# =====================================================================
+# Room 4 (DQN)
+# =====================================================================
+
+def export_room4_artifact(
+    environment: Any,
+    algorithm_config: Any,
+    result: Any,
+) -> str:
+    # Convert state_dict tensors to list
+    weights = {k: v.cpu().tolist() for k, v in result.policy_net.state_dict().items()}
+    pipes_data = [
+        {
+            "x": float(p.x),
+            "width": float(p.width),
+            "gap_start": float(p.gap_start),
+            "gap_size": float(p.gap_size),
+        }
+        for p in environment.config.pipes
+    ]
+
+    payload: dict[str, Any] = {
+        "artifact_version": ARTIFACT_VERSION,
+        "room": 4,
+        "algorithm": "dqn",
+        "environment": {
+            "width": float(environment.config.width),
+            "height": float(environment.config.height),
+            "dt": float(environment.config.dt),
+            "start": list(environment.config.start),
+            "goal_x": float(environment.config.goal_x),
+            "pipes": pipes_data,
+            "rewards": environment.config.rewards,
+        },
+        "algorithm_config": {
+            "alpha": float(algorithm_config.alpha),
+            "gamma": float(algorithm_config.gamma),
+            "epsilon_start": float(algorithm_config.epsilon_start),
+            "epsilon_min": float(algorithm_config.epsilon_min),
+            "epsilon_decay": float(algorithm_config.epsilon_decay),
+            "episodes": int(algorithm_config.episodes),
+            "max_timesteps": int(algorithm_config.max_timesteps),
+            "buffer_capacity": int(algorithm_config.buffer_capacity),
+            "batch_size": int(algorithm_config.batch_size),
+            "target_update_freq": int(algorithm_config.target_update_freq),
+            "hidden_dims": list(algorithm_config.hidden_dims),
+            "seed": int(algorithm_config.seed),
+        },
+        "result": {
+            "weights": weights,
+            "metrics": [asdict(metric) for metric in result.metrics],
+            "converged": bool(result.converged),
+            "episodes_run": int(result.episodes_run),
+        },
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def import_room4_artifact(
+    raw_json: str,
+) -> tuple[Any, Any, Any]:
+    import torch
+    from .dqn import DQNConfig, DQNNetwork, DQNResult, DQNTrainingMetric
+    from .room4 import PipeObstacle, Room4Config, Room4Environment
+
+    payload = json.loads(raw_json)
+    if payload.get("artifact_version") != ARTIFACT_VERSION:
+        raise ValueError("Unsupported artifact version.")
+    if payload.get("room") != 4 or payload.get("algorithm") != "dqn":
+        raise ValueError("The uploaded artifact is not a Room 4 DQN model.")
+
+    env_data = payload["environment"]
+    pipes = [
+        PipeObstacle(
+            x=float(p["x"]),
+            width=float(p["width"]),
+            gap_start=float(p["gap_start"]),
+            gap_size=float(p["gap_size"]),
+        )
+        for p in env_data["pipes"]
+    ]
+    room_config = Room4Config(
+        width=float(env_data["width"]),
+        height=float(env_data["height"]),
+        dt=float(env_data["dt"]),
+        start=tuple(env_data["start"]),
+        goal_x=float(env_data["goal_x"]),
+        pipes=pipes,
+        rewards={str(k): float(v) for k, v in env_data["rewards"].items()},
+    )
+    environment = Room4Environment(room_config)
+
+    algo_data = payload["algorithm_config"]
+    algorithm_config = DQNConfig(
+        alpha=float(algo_data["alpha"]),
+        gamma=float(algo_data["gamma"]),
+        epsilon_start=float(algo_data["epsilon_start"]),
+        epsilon_min=float(algo_data["epsilon_min"]),
+        epsilon_decay=float(algo_data["epsilon_decay"]),
+        episodes=int(algo_data["episodes"]),
+        max_timesteps=int(algo_data["max_timesteps"]),
+        buffer_capacity=int(algo_data["buffer_capacity"]),
+        batch_size=int(algo_data["batch_size"]),
+        target_update_freq=int(algo_data["target_update_freq"]),
+        hidden_dims=tuple(algo_data["hidden_dims"]),
+        seed=int(algo_data["seed"]),
+    )
+
+    result_data = payload["result"]
+    policy_net = DQNNetwork(state_dim=4, action_dim=9, hidden_dims=algorithm_config.hidden_dims)
+
+    state_dict = {
+        k: torch.tensor(v, dtype=torch.float32)
+        for k, v in result_data["weights"].items()
+    }
+    policy_net.load_state_dict(state_dict)
+
+    metrics = [DQNTrainingMetric(**m) for m in result_data["metrics"]]
+
+    result = DQNResult(
+        policy_net=policy_net,
+        metrics=metrics,
+        converged=bool(result_data["converged"]),
+        episodes_run=int(result_data["episodes_run"]),
+        config=algorithm_config,
+    )
+
+    return environment, algorithm_config, result
+

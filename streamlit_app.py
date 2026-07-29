@@ -24,8 +24,10 @@ from escape_room_rl.artifacts import (  # noqa: E402
     import_room2_artifact,
     export_room3_artifact,
     import_room3_artifact,
+    export_room4_artifact,
+    import_room4_artifact,
 )
-from escape_room_rl.evaluation import evaluate_policy  # noqa: E402
+from escape_room_rl.evaluation import evaluate_policy, evaluate_room4_dqn  # noqa: E402
 from escape_room_rl.policy_iteration import (  # noqa: E402
     PolicyIterationConfig,
     run_policy_iteration,
@@ -42,6 +44,11 @@ from escape_room_rl.sarsa import (  # noqa: E402
 from escape_room_rl.q_learning import (  # noqa: E402
     QLearningConfig,
     run_q_learning,
+)
+from escape_room_rl.dqn import (  # noqa: E402
+    DQNConfig,
+    DQNNetwork,
+    run_dqn,
 )
 from escape_room_rl.room1 import (  # noqa: E402
     DEFAULT_REWARDS,
@@ -65,11 +72,19 @@ from escape_room_rl.room3 import (  # noqa: E402
     Room3Config,
     Room3Environment,
 )
+from escape_room_rl.room4 import (  # noqa: E402
+    DEFAULT_ROOM4_PIPES,
+    DEFAULT_ROOM4_REWARDS,
+    PipeObstacle,
+    Room4Config,
+    Room4Environment,
+)
 from escape_room_rl.display_formatting import (  # noqa: E402
     format_reward_label,
     reward_sign_class,
 )
-from escape_room_rl.visualization import render_grid_html  # noqa: E402
+from escape_room_rl.visualization import render_grid_html, render_room4_html  # noqa: E402
+
 
 
 st.set_page_config(
@@ -371,7 +386,40 @@ def initialize_state() -> None:
             "seed": 123,
         },
         "room3_random_controls": {"wall_count": 14, "icy_count": 6, "seed": 42},
+        # Room 4 (DQN - Flappy Bird)
+        "room4_pipes": [
+            PipeObstacle(x=2.5, width=0.6, gap_start=3.5, gap_size=3.0),
+            PipeObstacle(x=5.0, width=0.6, gap_start=2.0, gap_size=3.0),
+            PipeObstacle(x=7.5, width=0.6, gap_start=4.5, gap_size=3.0),
+        ],
+        "room4_reward_values": dict(DEFAULT_ROOM4_REWARDS),
+        "room4_result": None,
+        "room4_result_environment": None,
+        "room4_algorithm_config": None,
+        "room4_test_results": None,
+        "room4_training_controls": {
+            "alpha": 0.001,
+            "gamma": 0.99,
+            "epsilon_start": 1.0,
+            "epsilon_min": 0.05,
+            "epsilon_decay": 0.995,
+            "episodes": 300,
+            "max_timesteps": 500,
+            "buffer_capacity": 10000,
+            "batch_size": 64,
+            "target_update_freq": 100,
+            "hidden_layers": 2,
+            "hidden_units": 32,
+            "seed": 42,
+            "live_update_every": 10,
+        },
+        "room4_test_controls": {
+            "episodes": 50,
+            "max_timesteps": 500,
+            "seed": 123,
+        },
     }
+
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
@@ -1552,6 +1600,334 @@ def render_room(room_num: int) -> None:
         render_models_page(room_num)
 
 
+# =====================================================================
+# ROOM 4 (DQN - FLAPPY BIRD) IMPLEMENTATION
+# =====================================================================
+
+def build_room4_environment() -> Room4Environment:
+    config = Room4Config(
+        pipes=list(st.session_state.room4_pipes),
+        rewards=dict(st.session_state.room4_reward_values),
+    )
+    return Room4Environment(config)
+
+
+def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
+    st.sidebar.title("Room 4 Controls (DQN)")
+    section = st.sidebar.radio(
+        "Control section",
+        options=["Environment", "Training", "Testing", "Models"],
+        key="room4_control_section",
+    )
+
+    requests: dict[str, bool] = {"train": False, "reset": False}
+    run_test = False
+
+    if section == "Environment":
+        st.sidebar.subheader("Flappy Bird Pipe Obstacles")
+        pipe_count = st.sidebar.slider("Number of Pipes", 1, 5, len(st.session_state.room4_pipes), key="room4_pipe_count")
+
+        current_pipes = list(st.session_state.room4_pipes)
+        while len(current_pipes) < pipe_count:
+            idx = len(current_pipes)
+            current_pipes.append(PipeObstacle(x=2.0 + idx * 2.0, width=0.6, gap_start=3.0, gap_size=3.0))
+        current_pipes = current_pipes[:pipe_count]
+
+        updated_pipes = []
+        for idx, pipe in enumerate(current_pipes):
+            with st.sidebar.expander(f"Pipe {idx + 1} Configuration", expanded=False):
+                px = st.number_input(f"Pipe {idx + 1} X Position (m)", 0.5, 9.0, float(pipe.x), 0.1, key=f"p_{idx}_x")
+                pw = st.number_input(f"Pipe {idx + 1} Width (m)", 0.2, 2.0, float(pipe.width), 0.1, key=f"p_{idx}_w")
+                g_start = st.number_input(f"Pipe {idx + 1} Gap Start Y (m)", 0.5, 8.0, float(pipe.gap_start), 0.1, key=f"p_{idx}_gs")
+                g_size = st.number_input(f"Pipe {idx + 1} Gap Size (m)", 1.0, 6.0, float(pipe.gap_size), 0.1, key=f"p_{idx}_gz")
+                updated_pipes.append(PipeObstacle(x=px, width=pw, gap_start=g_start, gap_size=g_size))
+
+        if updated_pipes != st.session_state.room4_pipes:
+            st.session_state.room4_pipes = updated_pipes
+            st.session_state.room4_result = None
+
+        st.sidebar.subheader("Reward Structure")
+        rewards = dict(st.session_state.room4_reward_values)
+        r_step = st.sidebar.slider("Step penalty", -1.0, 0.0, float(rewards.get("step", -0.05)), 0.01, key="r4_r_step")
+        r_prog = st.sidebar.slider("Progress reward", 0.0, 2.0, float(rewards.get("progress", 0.5)), 0.1, key="r4_r_prog")
+        r_pipe = st.sidebar.slider("Pipe passed reward", 0.0, 20.0, float(rewards.get("pipe_passed", 5.0)), 0.5, key="r4_r_pipe")
+        r_goal = st.sidebar.slider("Goal reward", 5.0, 50.0, float(rewards.get("goal_reached", 20.0)), 1.0, key="r4_r_goal")
+        r_coll = st.sidebar.slider("Collision penalty", -50.0, -1.0, float(rewards.get("collision", -20.0)), 1.0, key="r4_r_coll")
+
+        st.session_state.room4_reward_values = {
+            "step": float(r_step),
+            "progress": float(r_prog),
+            "pipe_passed": float(r_pipe),
+            "goal_reached": float(r_goal),
+            "collision": float(r_coll),
+        }
+
+    elif section == "Training":
+        controls = st.session_state.room4_training_controls
+        st.sidebar.subheader("DQN Hyperparameters")
+        alpha = st.sidebar.number_input("Learning rate (α)", 0.00001, 0.1, float(controls["alpha"]), format="%.5f", key="r4_alpha")
+        gamma = st.sidebar.number_input("Discount factor (γ)", 0.0, 0.999, float(controls["gamma"]), format="%.3f", key="r4_gamma")
+        eps_start = st.sidebar.number_input("Epsilon start", 0.0, 1.0, float(controls["epsilon_start"]), format="%.2f", key="r4_eps_start")
+        eps_min = st.sidebar.number_input("Epsilon min", 0.0, 1.0, float(controls["epsilon_min"]), format="%.3f", key="r4_eps_min")
+        eps_decay = st.sidebar.number_input("Epsilon decay", 0.8, 1.0, float(controls["epsilon_decay"]), format="%.4f", key="r4_eps_decay")
+        episodes = st.sidebar.number_input("Episodes", 1, 5000, int(controls["episodes"]), key="r4_episodes")
+        max_steps = st.sidebar.number_input("Max timesteps", 50, 2000, int(controls["max_timesteps"]), key="r4_max_steps")
+        buf_cap = st.sidebar.number_input("Buffer capacity", 100, 100000, int(controls["buffer_capacity"]), key="r4_buf_cap")
+        batch_size = st.sidebar.number_input("Batch size", 8, 512, int(controls["batch_size"]), key="r4_batch_size")
+        target_freq = st.sidebar.number_input("Target update freq", 10, 1000, int(controls["target_update_freq"]), key="r4_target_freq")
+
+        st.sidebar.subheader("Neural Network Architecture")
+        h_layers = st.sidebar.slider("Hidden layers count", 1, 4, int(controls.get("hidden_layers", 2)), key="r4_h_layers")
+        h_units = st.sidebar.select_slider("Perceptrons per hidden layer", options=[16, 32, 64, 128, 256], value=int(controls.get("hidden_units", 32)), key="r4_h_units")
+
+        seed = st.sidebar.number_input("Seed", 0, value=int(controls["seed"]), key="r4_seed")
+        live_update = st.sidebar.number_input("Update charts every N episodes", 1, 100, int(controls["live_update_every"]), key="r4_live_update")
+
+        st.session_state.room4_training_controls = {
+            "alpha": float(alpha),
+            "gamma": float(gamma),
+            "epsilon_start": float(eps_start),
+            "epsilon_min": float(eps_min),
+            "epsilon_decay": float(eps_decay),
+            "episodes": int(episodes),
+            "max_timesteps": int(max_steps),
+            "buffer_capacity": int(buf_cap),
+            "batch_size": int(batch_size),
+            "target_update_freq": int(target_freq),
+            "hidden_layers": int(h_layers),
+            "hidden_units": int(h_units),
+            "seed": int(seed),
+            "live_update_every": int(live_update),
+        }
+
+        requests["train"] = st.sidebar.button("▶ Train DQN Agent", type="primary", use_container_width=True, key="r4_train_btn")
+        requests["reset"] = st.sidebar.button("Reset trained model", use_container_width=True, key="r4_reset_btn")
+
+    elif section == "Testing":
+        controls = st.session_state.room4_test_controls
+        st.sidebar.subheader("Test configuration")
+        episodes = st.sidebar.number_input("Test episodes", 1, 1000, int(controls["episodes"]), key="r4_test_episodes")
+        max_steps = st.sidebar.number_input("Max timesteps per episode", 10, 5000, int(controls["max_timesteps"]), key="r4_test_max_steps")
+        seed = st.sidebar.number_input("Test seed", 0, value=int(controls["seed"]), key="r4_test_seed")
+
+        st.session_state.room4_test_controls = {"episodes": int(episodes), "max_timesteps": int(max_steps), "seed": int(seed)}
+        run_test = st.sidebar.button(
+            "🧪 Run test", type="primary", use_container_width=True,
+            disabled=st.session_state.room4_result is None, key="r4_run_test_btn"
+        )
+
+    else:  # Models
+        st.sidebar.subheader("Model artifact")
+        res = st.session_state.room4_result
+        env = st.session_state.room4_result_environment
+        config = st.session_state.room4_algorithm_config
+        if res and env and config:
+            art = export_room4_artifact(env, config, res)
+            st.sidebar.download_button(
+                "⬇ Download Room 4 model (JSON)",
+                data=art,
+                file_name="room4_dqn_model.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+
+        uploaded = st.sidebar.file_uploader("Upload model JSON", type=["json"], key="r4_upload")
+        if uploaded is not None and st.sidebar.button("Load model", use_container_width=True, key="r4_load_btn"):
+            try:
+                env_l, config_l, res_l = import_room4_artifact(uploaded.getvalue().decode("utf-8"))
+            except Exception as exc:
+                st.sidebar.error(f"Invalid artifact: {exc}")
+            else:
+                st.session_state.room4_result_environment = env_l
+                st.session_state.room4_algorithm_config = config_l
+                st.session_state.room4_result = res_l
+                st.session_state.room4_pipes = list(env_l.config.pipes)
+                st.session_state.room4_reward_values = dict(env_l.config.rewards)
+                st.sidebar.success("Room 4 DQN model loaded successfully!")
+                st.rerun()
+
+    return section, requests, run_test
+
+
+def render_room4() -> None:
+    section, requests, run_test = render_room4_controls()
+
+    st.markdown('<div class="room-header"><h2>🐤 Room 4: Continuous Flappy Bird (DQN Algorithm)</h2></div>', unsafe_allow_html=True)
+
+    if section == "Environment":
+        env = build_room4_environment()
+        st.subheader("10m × 10m Continuous Flappy Bird Room Layout")
+        st.markdown(render_room4_html(env), unsafe_allow_html=True)
+
+        st.subheader("Custom Pipe Obstacles Overview")
+        pipe_df = pd.DataFrame([
+            {
+                "Pipe": idx + 1,
+                "X Position (m)": pipe.x,
+                "Width (m)": pipe.width,
+                "Gap Start Y (m)": pipe.gap_start,
+                "Gap End Y (m)": pipe.gap_end,
+                "Gap Size (m)": pipe.gap_size,
+            }
+            for idx, pipe in enumerate(env.config.pipes)
+        ])
+        st.dataframe(pipe_df, use_container_width=True)
+
+    elif section == "Training":
+        if requests["reset"]:
+            st.session_state.room4_result = None
+            st.session_state.room4_result_environment = None
+            st.session_state.room4_algorithm_config = None
+            st.session_state.room4_test_results = None
+            st.success("Trained Room 4 model reset.")
+            st.rerun()
+
+        if requests["train"]:
+            env = build_room4_environment()
+            ctrls = st.session_state.room4_training_controls
+
+            hidden_dims = tuple([ctrls["hidden_units"]] * ctrls["hidden_layers"])
+            config = DQNConfig(
+                alpha=ctrls["alpha"],
+                gamma=ctrls["gamma"],
+                epsilon_start=ctrls["epsilon_start"],
+                epsilon_min=ctrls["epsilon_min"],
+                epsilon_decay=ctrls["epsilon_decay"],
+                episodes=ctrls["episodes"],
+                max_timesteps=ctrls["max_timesteps"],
+                buffer_capacity=ctrls["buffer_capacity"],
+                batch_size=ctrls["batch_size"],
+                target_update_freq=ctrls["target_update_freq"],
+                hidden_dims=hidden_dims,
+                seed=ctrls["seed"],
+            )
+
+            status_placeholder = st.empty()
+            st.subheader("Live Training Metrics")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.caption("**Episode Total Reward**")
+                slot_reward = st.empty()
+                st.caption("**Epsilon Exploration Decay**")
+                slot_eps = st.empty()
+            with c2:
+                st.caption("**Training Loss (Smooth L1)**")
+                slot_loss = st.empty()
+                st.caption("**Mean Q-Value**")
+                slot_q = st.empty()
+
+            live_update_freq = ctrls["live_update_every"]
+            live_rows: list[dict] = []
+
+            def live_callback(metric, policy_net):
+                live_rows.append(asdict(metric))
+                if metric.episode % live_update_freq == 0 or metric.episode == config.episodes:
+                    status_placeholder.info(
+                        f"Training Episode {metric.episode}/{config.episodes} • "
+                        f"Reward: {metric.total_reward:.2f} • Epsilon: {metric.epsilon:.3f} • Loss: {metric.loss:.4f}"
+                    )
+                    df_live = pd.DataFrame(live_rows)
+                    slot_reward.line_chart(df_live.set_index("episode")[["total_reward"]], x_label="Episode", y_label="Total Reward")
+                    slot_loss.line_chart(df_live.set_index("episode")[["loss"]], x_label="Episode", y_label="Loss")
+                    slot_eps.line_chart(df_live.set_index("episode")[["epsilon"]], x_label="Episode", y_label="Epsilon")
+                    slot_q.line_chart(df_live.set_index("episode")[["mean_q_value"]], x_label="Episode", y_label="Mean Q")
+
+            with st.spinner("Training DQN Agent..."):
+                result = run_dqn(env, config, callback=live_callback)
+
+            st.session_state.room4_result = result
+            st.session_state.room4_result_environment = env
+            st.session_state.room4_algorithm_config = config
+            status_placeholder.success("DQN Training complete!")
+
+        res = st.session_state.room4_result
+        if res and not requests["train"]:
+            df = pd.DataFrame([asdict(m) for m in res.metrics])
+            st.subheader("Live Training Metrics")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.caption("**Episode Total Reward**")
+                st.line_chart(df.set_index("episode")[["total_reward"]], x_label="Episode", y_label="Total Reward")
+                st.caption("**Epsilon Exploration Decay**")
+                st.line_chart(df.set_index("episode")[["epsilon"]], x_label="Episode", y_label="Epsilon")
+            with c2:
+                st.caption("**Training Loss (Smooth L1)**")
+                st.line_chart(df.set_index("episode")[["loss"]], x_label="Episode", y_label="Loss")
+                st.caption("**Mean Q-Value**")
+                st.line_chart(df.set_index("episode")[["mean_q_value"]], x_label="Episode", y_label="Mean Q")
+
+            st.write(f"**Episodes Run:** {res.episodes_run} | **Goal Reached in Late Training:** {'Yes ✅' if res.converged else 'No ❌'}")
+        elif not requests["train"]:
+            st.info("Click '▶ Train DQN Agent' in the left sidebar to start training.")
+
+
+    elif section == "Testing":
+        if run_test:
+            res = st.session_state.room4_result
+            env = st.session_state.room4_result_environment
+            if res and env:
+                t_ctrls = st.session_state.room4_test_controls
+                test_results = evaluate_room4_dqn(
+                    environment=env,
+                    policy_net=res.policy_net,
+                    episodes=t_ctrls["episodes"],
+                    max_timesteps=t_ctrls["max_timesteps"],
+                    seed=t_ctrls["seed"],
+                )
+                st.session_state.room4_test_results = test_results
+
+        test_res = st.session_state.room4_test_results
+        env = st.session_state.room4_result_environment
+        if test_res and env:
+            st.subheader("Test Execution Summary")
+            df_test = pd.DataFrame([
+                {
+                    "Episode": ep.episode,
+                    "Success": ep.success,
+                    "Timesteps": ep.timesteps,
+                    "Total Reward": ep.total_reward,
+                    "Pipes Passed": ep.pipes_passed,
+                }
+                for ep in test_res
+            ])
+            success_rate = (df_test["Success"].sum() / len(df_test)) * 100.0
+            st.metric("Test Success Rate", f"{success_rate:.1f}%")
+            st.dataframe(df_test, use_container_width=True)
+
+            st.subheader("Episode Replay Visualizer")
+            selected_ep_idx = st.selectbox("Select Episode to Replay", options=list(range(len(test_res))), format_func=lambda i: f"Episode {test_res[i].episode} (Success: {test_res[i].success}, Reward: {test_res[i].total_reward:.2f})")
+            ep_data = test_res[selected_ep_idx]
+
+            if ep_data.trajectory:
+                step_idx = st.slider("Step timeline", 0, len(ep_data.trajectory) - 1, 0)
+                step_info = ep_data.trajectory[step_idx]
+
+                st.write(f"**Step {step_info.timestep}** | State: $(x={step_info.state[0]:.2f}, y={step_info.state[1]:.2f}, V_x={step_info.state[2]:.1f}, V_y={step_info.state[3]:.1f})$ | Action: {step_info.action.name} | Step Reward: {step_info.reward:.2f}")
+
+                traj_states = [s.state for s in ep_data.trajectory[:step_idx + 1]]
+                st.markdown(render_room4_html(env, agent_state=step_info.state, trajectory=traj_states), unsafe_allow_html=True)
+        else:
+            st.info("Run a test from the left sidebar to view test metrics and replay trajectories.")
+
+    else:  # Models
+        res = st.session_state.room4_result
+        config = st.session_state.room4_algorithm_config
+        st.subheader("Model & Network Information")
+        if res and config:
+            st.json({
+                "Algorithm": "DQN (Deep Q-Network)",
+                "Input State Dimension": 4,
+                "Output Action Dimension": 9,
+                "Hidden Architecture": list(config.hidden_dims),
+                "Learning Rate": config.alpha,
+                "Discount Factor": config.gamma,
+                "Episodes Trained": res.episodes_run,
+                "Converged": res.converged,
+            })
+        else:
+            st.info("No trained model currently in memory.")
+
+
 def render_future_room(room_name: str) -> None:
     with st.sidebar:
         st.title(f"{room_name} Controls")
@@ -1563,10 +1939,6 @@ def render_future_room(room_name: str) -> None:
             key=f"{room_name.lower().replace(' ', '_')}_control_section",
         )
     st.title(f"{room_name} — Coming soon")
-    st.write(
-        "The top navigation and room-specific left control bar are ready. "
-        "This room will be connected when its continuous environment and algorithm are implemented."
-    )
 
 
 # Execution Entry Point
@@ -1578,5 +1950,8 @@ elif active_room == "Room 2":
     render_room(2)
 elif active_room == "Room 3":
     render_room(3)
+elif active_room == "Room 4":
+    render_room4()
 else:
     render_future_room(active_room)
+

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from html import escape
-
 from typing import Any
 from .display_formatting import format_reward_label, reward_sign_class
 from .room1 import Action, State
+from .room4 import State4
 
 ACTION_ARROWS = {
     Action.UP: "↑",
@@ -142,4 +142,114 @@ def render_grid_html(
       .wall .cell-coordinate {{ color: white; }}
     </style>
     <div class="room-grid">{''.join(cells)}</div>
+    """
+
+
+def render_room4_html(
+    environment: Any,
+    agent_state: State4 | None = None,
+    trajectory: list[State4] | None = None,
+) -> str:
+    """Render a styled Flappy Bird 2D continuous 10x10m SVG visualization."""
+    svg_width = 720
+    svg_height = 540
+    scale_x = svg_width / environment.config.width
+    scale_y = svg_height / environment.config.height
+
+    def to_svg_x(x: float) -> float:
+        return x * scale_x
+
+    def to_svg_y(y: float) -> float:
+        # Invert Y so 0 is at the bottom and 10 is at the top
+        return (environment.config.height - y) * scale_y
+
+    elements: list[str] = []
+
+    # 1. Background sky & grass floor
+    elements.append(
+        f'<rect x="0" y="0" width="{svg_width}" height="{svg_height}" fill="#70c5ce" />'
+    )
+    elements.append(
+        f'<rect x="0" y="{svg_height - 20}" width="{svg_width}" height="20" fill="#ded895" stroke="#73be2e" stroke-width="4" />'
+    )
+
+    # 2. Goal Zone (x >= goal_x)
+    goal_svg_x = to_svg_x(environment.config.goal_x)
+    elements.append(
+        f'<rect x="{goal_svg_x}" y="0" width="{svg_width - goal_svg_x}" height="{svg_height}" fill="rgba(245, 158, 11, 0.3)" stroke="#f59e0b" stroke-width="2" stroke-dasharray="6,4" />'
+    )
+    elements.append(
+        f'<text x="{goal_svg_x + 10}" y="30" fill="#92400e" font-size="18" font-weight="bold">🚪 GOAL</text>'
+    )
+
+    # 3. Flappy Bird Green Pipes
+    for pipe in environment.config.pipes:
+        px_min = to_svg_x(pipe.x_min)
+        pipe_w = pipe.width * scale_x
+        top_h = to_svg_y(pipe.gap_end)
+        bot_y = to_svg_y(pipe.gap_start)
+        bot_h = svg_height - bot_y
+
+        # Top Pipe Body
+        elements.append(
+            f'<rect x="{px_min}" y="0" width="{pipe_w}" height="{top_h}" fill="#73bf2e" stroke="#538021" stroke-width="3" rx="4" />'
+        )
+        # Top Pipe Cap
+        elements.append(
+            f'<rect x="{px_min - 4}" y="{top_h - 18}" width="{pipe_w + 8}" height="18" fill="#73bf2e" stroke="#538021" stroke-width="3" rx="3" />'
+        )
+
+        # Bottom Pipe Body
+        elements.append(
+            f'<rect x="{px_min}" y="{bot_y}" width="{pipe_w}" height="{bot_h}" fill="#73bf2e" stroke="#538021" stroke-width="3" rx="4" />'
+        )
+        # Bottom Pipe Cap
+        elements.append(
+            f'<rect x="{px_min - 4}" y="{bot_y}" width="{pipe_w + 8}" height="18" fill="#73bf2e" stroke="#538021" stroke-width="3" rx="3" />'
+        )
+
+    # 4. Trajectory Path
+    if trajectory and len(trajectory) > 1:
+        points = " ".join([f"{to_svg_x(st[0]):.1f},{to_svg_y(st[1]):.1f}" for st in trajectory])
+        elements.append(
+            f'<polyline points="{points}" fill="none" stroke="#ef4444" stroke-width="3" stroke-dasharray="4,2" />'
+        )
+
+    # 5. Agent (Flappy Bird)
+    curr_state = agent_state or environment.config.start
+    bx = to_svg_x(curr_state[0])
+    by = to_svg_y(curr_state[1])
+    bird_r = environment.config.bird_radius * scale_x
+
+    # Bird Outer Circle
+    elements.append(
+        f'<circle cx="{bx}" cy="{by}" r="{bird_r + 4}" fill="#facc15" stroke="#ca8a04" stroke-width="3" />'
+    )
+    # Bird Eye & Beak
+    elements.append(
+        f'<circle cx="{bx + bird_r * 0.4}" cy="{by - bird_r * 0.3}" r="4" fill="white" stroke="black" stroke-width="1" />'
+    )
+    elements.append(
+        f'<circle cx="{bx + bird_r * 0.5}" cy="{by - bird_r * 0.3}" r="1.5" fill="black" />'
+    )
+    elements.append(
+        f'<polygon points="{bx + bird_r * 0.6},{by} {bx + bird_r * 1.2},{by + 3} {bx + bird_r * 0.6},{by + 6}" fill="#f97316" />'
+    )
+
+    # 6. Start Marker
+    sx = to_svg_x(environment.config.start[0])
+    sy = to_svg_y(environment.config.start[1])
+    elements.append(
+        f'<circle cx="{sx}" cy="{sy}" r="8" fill="#22c55e" stroke="white" stroke-width="2" />'
+    )
+    elements.append(
+        f'<text x="{sx - 6}" y="{sy + 4}" fill="white" font-size="10" font-weight="bold">S</text>'
+    )
+
+    return f"""
+    <div style="display: flex; justify-content: center; width: 100%;">
+      <svg width="{svg_width}" height="{svg_height}" viewBox="0 0 {svg_width} {svg_height}" style="border: 3px solid #263238; border-radius: 10px; background: #70c5ce; box-shadow: 0 4px 16px rgba(0,0,0,0.2);">
+        {''.join(elements)}
+      </svg>
+    </div>
     """

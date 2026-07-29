@@ -1,6 +1,13 @@
 """Escape-room reinforcement-learning environments and algorithms."""
 
-from .evaluation import EpisodeResult, EpisodeStep, evaluate_policy
+from .evaluation import (
+    EpisodeResult,
+    EpisodeStep,
+    Room4EpisodeResult,
+    Room4EpisodeStep,
+    evaluate_policy,
+    evaluate_room4_dqn,
+)
 from .policy_iteration import (
     PolicyIterationConfig,
     PolicyIterationResult,
@@ -31,6 +38,19 @@ from .room3 import (
     Room3Environment,
     default_room3_config,
 )
+from .room4 import (
+    Action4,
+    PipeObstacle,
+    Room4Config,
+    Room4Environment,
+)
+from .dqn import (
+    DQNConfig,
+    DQNNetwork,
+    DQNResult,
+    DQNTrainingMetric,
+    run_dqn,
+)
 from .sarsa import (
     SarsaConfig,
     SarsaResult,
@@ -47,8 +67,14 @@ from .value_iteration import (
 
 __all__ = [
     "Action",
+    "Action4",
+    "DQNConfig",
+    "DQNNetwork",
+    "DQNResult",
+    "DQNTrainingMetric",
     "EpisodeResult",
     "EpisodeStep",
+    "PipeObstacle",
     "PolicyIterationConfig",
     "PolicyIterationResult",
     "QLearningConfig",
@@ -60,6 +86,10 @@ __all__ = [
     "Room2Environment",
     "Room3Config",
     "Room3Environment",
+    "Room4Config",
+    "Room4Environment",
+    "Room4EpisodeResult",
+    "Room4EpisodeStep",
     "SarsaConfig",
     "SarsaResult",
     "SarsaTrainingMetric",
@@ -72,8 +102,10 @@ __all__ = [
     "default_room2_config",
     "default_room3_config",
     "evaluate_policy",
+    "evaluate_room4_dqn",
     "generate_random_slippery_cells",
     "run_policy_iteration",
+    "run_dqn",
     "run_q_learning",
     "run_sarsa",
     "run_value_iteration",
