@@ -11,6 +11,7 @@ from escape_room_rl.artifacts import export_room4_artifact, import_room4_artifac
 from escape_room_rl.evaluation import evaluate_room4_ppo
 from escape_room_rl.ppo import PPOConfig, run_ppo
 from escape_room_rl.room4 import (
+    ACTION_VELOCITIES,
     Action4,
     PipeObstacle,
     Room4Config,
@@ -20,6 +21,12 @@ from escape_room_rl.room4 import (
 
 
 class Room4PPOTests(unittest.TestCase):
+    def test_actions_use_only_discrete_velocity_components(self) -> None:
+        self.assertEqual(len(ACTION_VELOCITIES), len(Action4))
+        for velocity_x, velocity_y in ACTION_VELOCITIES.values():
+            self.assertIn(velocity_x, {-1.0, 0.0, 1.0})
+            self.assertIn(velocity_y, {-1.0, 0.0, 1.0})
+
     def test_five_pipes_are_evenly_spaced_and_valid(self) -> None:
         pipes = distribute_pipes_evenly(
             [
@@ -42,6 +49,8 @@ class Room4PPOTests(unittest.TestCase):
                     "step": 0.0,
                     "progress": 0.0,
                     "backward": -2.5,
+                    "hover": 0.0,
+                    "non_right": 0.0,
                     "pipe_passed": 0.0,
                     "goal_reached": 0.0,
                     "collision": 0.0,
@@ -53,6 +62,32 @@ class Room4PPOTests(unittest.TestCase):
             transition = env.step((5.0, 5.0, 0.0, 0.0), action)
             self.assertEqual(transition.reward, -2.5)
             self.assertIn("backward_move", transition.events)
+
+    def test_hover_and_non_right_penalties_are_applied(self) -> None:
+        rewards = {
+            "step": 0.0,
+            "progress": 0.0,
+            "backward": 0.0,
+            "hover": -2.0,
+            "non_right": -1.0,
+            "pipe_passed": 0.0,
+            "goal_reached": 0.0,
+            "collision": 0.0,
+        }
+        environment = Room4Environment(Room4Config(pipes=[], rewards=rewards))
+        state = environment.reset()
+
+        hover = environment.step(state, Action4.HOVER)
+        vertical = environment.step(state, Action4.UP)
+        diagonal_right = environment.step(state, Action4.UP_RIGHT)
+
+        self.assertEqual(hover.reward, -3.0)
+        self.assertIn("hover", hover.events)
+        self.assertIn("non_right_action", hover.events)
+        self.assertEqual(vertical.reward, -1.0)
+        self.assertIn("non_right_action", vertical.events)
+        self.assertEqual(diagonal_right.reward, 0.0)
+        self.assertNotIn("non_right_action", diagonal_right.events)
 
     def test_room4_environment_physics(self) -> None:
         config = Room4Config(

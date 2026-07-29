@@ -75,6 +75,8 @@ DEFAULT_ROOM4_REWARDS: dict[str, float] = {
     "step": -0.05,
     "progress": 0.5,
     "backward": 0.0,
+    "hover": -0.1,
+    "non_right": -0.1,
     "pipe_passed": 5.0,
     "goal_reached": 20.0,
     "collision": -20.0,
@@ -91,8 +93,9 @@ def distribute_pipes_evenly(
     """Return ``count`` pipes with equal horizontal spacing inside the room.
 
     Existing pipe width and gap settings are retained in their current order.
-    Newly added pipes receive the default obstacle settings.  The default
-    2m-to-8m range safely supports five pipes up to 2m wide in a 10m room.
+    Newly added pipes receive the default obstacle settings. The number of
+    pipes is unrestricted as long as it is positive; dense configurations may
+    intentionally overlap and create a more difficult environment.
     """
     if count <= 0:
         raise ValueError("Pipe count must be positive.")
@@ -206,6 +209,16 @@ class Room4Environment:
         elif dx < 0:
             events.append("backward_move")
             reward += self.config.rewards.get("backward", 0.0)
+
+        if action is Action4.HOVER:
+            events.append("hover")
+            reward += self.config.rewards.get("hover", -0.1)
+
+        # Vertical, leftward, and hover actions do not advance toward the goal.
+        # Rightward diagonals are considered forward actions and are not penalized.
+        if target_vx <= 0.0:
+            events.append("non_right_action")
+            reward += self.config.rewards.get("non_right", -0.1)
 
         # Boundary collision
         if new_x < 0 or new_x > self.config.width or new_y <= 0 or new_y >= self.config.height:

@@ -565,6 +565,8 @@ def export_room5_artifact(
             "traffic_speed_max": float(environment.config.traffic_speed_max),
             "traffic_count": int(environment.config.traffic_count),
             "car_length": float(environment.config.car_length),
+            "observation_size": int(environment.observation_size),
+            "observation_schema": "own_lane_edge_clearance_v2",
             "rewards": dict(environment.config.rewards),
             "seed": int(environment.config.seed),
         },
@@ -596,7 +598,7 @@ def import_room5_artifact(raw_json: str) -> tuple[Any, Any, Any]:
         PPOResult,
         PPOTrainingMetric,
     )
-    from .room5 import Room5Config, Room5Environment
+    from .room5 import OBSERVATION_SIZE, Room5Config, Room5Environment
 
     payload = json.loads(raw_json)
     if payload.get("artifact_version") != ARTIFACT_VERSION:
@@ -605,6 +607,17 @@ def import_room5_artifact(raw_json: str) -> tuple[Any, Any, Any]:
         raise ValueError("The uploaded artifact is not a Room 5 PPO model.")
 
     environment_data = payload["environment"]
+    artifact_observation_size = int(environment_data.get("observation_size", 19))
+    if artifact_observation_size != OBSERVATION_SIZE:
+        raise ValueError(
+            "This Room 5 model uses the legacy all-lanes observation. "
+            "Retrain it with the current own-lane-only observation schema."
+        )
+    if environment_data.get("observation_schema") != "own_lane_edge_clearance_v2":
+        raise ValueError(
+            "This Room 5 model uses center-to-center vehicle distances. "
+            "Retrain it with the current edge-to-edge clearance observation."
+        )
     room_config = Room5Config(
         lane_count=int(environment_data["lane_count"]),
         vision_distance=float(environment_data["vision_distance"]),

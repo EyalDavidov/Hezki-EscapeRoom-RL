@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import altair as alt
 import streamlit as st
-import streamlit.components.v1 as components
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -93,6 +94,7 @@ from escape_room_rl.room4 import (  # noqa: E402
     distribute_pipes_evenly,
 )
 from escape_room_rl.room5 import (  # noqa: E402
+    OBSERVATION_SIZE,
     Action5,
     DEFAULT_ROOM5_REWARDS,
     Room5Config,
@@ -124,11 +126,51 @@ st.markdown(
         --app-nav-height: 3.75rem;
       }
       header[data-testid="stHeader"] {
-        top: var(--app-nav-height) !important;
+        top: 0 !important;
+        height: var(--app-nav-height) !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        pointer-events: none !important;
+        z-index: 1000002 !important;
+        overflow: visible !important;
+      }
+      header[data-testid="stHeader"] [data-testid="stToolbar"] {
+        position: absolute !important;
+        top: 50% !important;
+        right: 0.75rem !important;
+        height: auto !important;
+        padding: 0 !important;
+        transform: translateY(-50%) !important;
+        background: transparent !important;
+        pointer-events: none !important;
+      }
+      header[data-testid="stHeader"] [data-testid="stAppDeployButton"],
+      header[data-testid="stHeader"] [data-testid="stMainMenu"],
+      header[data-testid="stHeader"] [data-testid="stMainMenuButton"],
+      header[data-testid="stHeader"] [data-testid="stExpandSidebarButton"] {
+        align-items: center !important;
+        pointer-events: auto !important;
+      }
+      header[data-testid="stHeader"] [data-testid="stExpandSidebarButton"] {
+        position: fixed !important;
+        top: 0.7rem !important;
+        left: 0.65rem !important;
+        z-index: 1000004 !important;
+        margin: 0 !important;
+      }
+      body:has([data-testid="stExpandSidebarButton"]) .st-key-nav_brand {
+        margin-left: 2.25rem !important;
+      }
+      header[data-testid="stHeader"] button {
+        color: #e2e8f0 !important;
+      }
+      header[data-testid="stHeader"] button:hover {
+        color: #ffffff !important;
+        background: rgba(255, 255, 255, 0.12) !important;
       }
       [data-testid="stMainBlockContainer"] {
         max-width: 100% !important;
-        padding-top: 8rem !important;
+        padding-top: calc(var(--app-nav-height) + 0.85rem) !important;
         padding-left: 2.5rem !important;
         padding-right: 2.5rem !important;
       }
@@ -138,9 +180,37 @@ st.markdown(
         top: var(--app-nav-height) !important;
         height: calc(100vh - var(--app-nav-height)) !important;
       }
+      [data-testid="stSidebar"] [data-testid="stSidebarHeader"],
+      [data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"] {
+        display: none !important;
+      }
+      [data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+        padding-top: 0 !important;
+      }
+      [data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+        padding-top: 0.7rem !important;
+      }
       [data-testid="stSidebar"] h1,
       [data-testid="stSidebar"] h2,
       [data-testid="stSidebar"] h3 { letter-spacing: -0.02em; }
+
+      /* Keep compact numeric controls on one row inside the fixed sidebar. */
+      [data-testid="stSidebar"] [data-testid="stNumberInput"] {
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr) minmax(7.4rem, 8.25rem) !important;
+        align-items: center !important;
+        column-gap: 0.65rem !important;
+      }
+      [data-testid="stSidebar"] [data-testid="stNumberInput"] > label {
+        min-width: 0 !important;
+        margin-bottom: 0 !important;
+      }
+      [data-testid="stSidebar"] [data-testid="stNumberInput"] > label p {
+        line-height: 1.2 !important;
+      }
+      [data-testid="stSidebar"] [data-testid="stNumberInput"] > div {
+        min-width: 0 !important;
+      }
 
       /* Full-viewport application navigation above both app columns. */
       div:has(> .st-key-main_top_nav) {
@@ -153,7 +223,7 @@ st.markdown(
         overflow: visible !important;
       }
       .st-key-main_top_nav {
-        position: static !important;
+        position: relative !important;
         width: 100% !important;
         height: var(--app-nav-height) !important;
         margin: 0 !important;
@@ -170,14 +240,27 @@ st.markdown(
         align-items: center !important;
       }
       .st-key-nav_brand {
-        flex: 1 1 auto !important;
+        display: flex !important;
+        flex: 0 0 auto !important;
+        align-items: center !important;
+        height: 100% !important;
         min-width: 250px !important;
+      }
+      .st-key-nav_brand > [data-testid="stVerticalBlock"] {
+        display: flex !important;
+        justify-content: center !important;
+        height: 100% !important;
+      }
+      .st-key-nav_brand [data-testid="stMarkdownContainer"],
+      .st-key-nav_brand [data-testid="stMarkdownContainer"] p {
+        margin: 0 !important;
       }
       .nav-brand {
         display: flex;
         align-items: center;
         gap: 0.7rem;
-        min-height: 2.55rem;
+        height: 100%;
+        min-height: 0;
         color: #f8fafc;
         white-space: nowrap;
       }
@@ -197,6 +280,18 @@ st.markdown(
         font-size: 1rem;
         font-weight: 750;
         letter-spacing: -0.01em;
+      }
+      .st-key-room_nav_buttons {
+        position: absolute !important;
+        top: 50% !important;
+        left: 50% !important;
+        width: max-content !important;
+        transform: translate(-50%, -50%) !important;
+        z-index: 1 !important;
+        pointer-events: auto !important;
+      }
+      .st-key-room_nav_buttons > [data-testid="stHorizontalBlock"] {
+        width: max-content !important;
       }
       .st-key-main_top_nav button {
         width: auto !important;
@@ -226,11 +321,157 @@ st.markdown(
         border-color: rgba(255, 255, 255, 0.25) !important;
         transform: translateY(-1px) !important;
       }
+      @media (max-width: 1100px) {
+        .st-key-nav_brand {
+          min-width: 2.15rem !important;
+        }
+        .nav-project-name {
+          display: none;
+        }
+      }
+      @media (max-width: 760px) {
+        .st-key-main_top_nav {
+          padding-left: 0.65rem !important;
+          padding-right: 0.65rem !important;
+        }
+        .st-key-main_top_nav button {
+          min-width: 3.75rem !important;
+          padding-left: 0.55rem !important;
+          padding-right: 0.55rem !important;
+          font-size: 0.78rem !important;
+        }
+      }
       .room-header {
         padding: 0.4rem 0 0.8rem 0;
         border-bottom: 1px solid rgba(128, 128, 128, 0.25);
         margin-bottom: 1rem;
       }
+      .room-page-hero {
+        position: relative;
+        overflow: hidden;
+        padding: 1.15rem 1.35rem;
+        margin: 0 0 0.85rem;
+        border: 1px solid rgba(59, 130, 246, 0.28);
+        border-radius: 1rem;
+        background:
+          radial-gradient(circle at 92% 15%, rgba(20, 184, 166, 0.22), transparent 28%),
+          linear-gradient(135deg, rgba(37, 99, 235, 0.16), rgba(15, 23, 42, 0.08));
+      }
+      .room-page-hero h1 { margin: 0; font-size: clamp(1.65rem, 2.7vw, 2.45rem); }
+      .room-page-hero p { margin: 0.45rem 0 0; max-width: 72rem; opacity: 0.82; }
+      .room-page-eyebrow {
+        margin-bottom: 0.35rem;
+        color: #3b82f6;
+        font-size: 0.75rem;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .room-section-anchor { scroll-margin-top: calc(var(--app-nav-height) + 1.2rem); }
+      .room-section-title { margin-bottom: 0.85rem; }
+      .room-section-title h2 { margin: 0; font-size: 1.32rem; }
+      .room-section-title p { margin: 0.28rem 0 0; opacity: 0.72; font-size: 0.9rem; }
+      [data-testid="stSidebar"] div:has(> .st-key-control_section_switcher) {
+        position: sticky !important;
+        top: 0 !important;
+        z-index: 1200 !important;
+        padding: 0.22rem 0 0.3rem !important;
+        margin: 0 !important;
+        background: var(--secondary-background-color, #f0f2f6) !important;
+      }
+      [data-testid="stSidebar"] .st-key-control_section_switcher {
+        padding: 0.25rem !important;
+        margin: 0 !important;
+        border: 1px solid #d1d5db !important;
+        border-radius: 0.25rem !important;
+        background: transparent !important;
+        box-shadow: none !important;
+      }
+      .st-key-control_section_switcher [data-testid="stHorizontalBlock"] {
+        gap: 0.18rem !important;
+      }
+      .st-key-control_section_switcher button {
+        min-height: 1.7rem !important;
+        padding: 0.08rem 0.2rem !important;
+        border-radius: 0.25rem !important;
+        font-size: 0.68rem !important;
+        font-weight: 500 !important;
+        box-shadow: none !important;
+        transform: none !important;
+      }
+      .st-key-control_section_switcher button[data-testid="stBaseButton-secondary"] {
+        border-color: #d1d5db !important;
+        background: transparent !important;
+        color: #1f2937 !important;
+      }
+      .st-key-control_section_switcher button[data-testid="stBaseButton-secondary"]:hover {
+        border-color: #9ca3af !important;
+        background: #f3f4f6 !important;
+        color: #111827 !important;
+      }
+      .st-key-control_section_switcher button[data-testid="stBaseButton-primary"] {
+        border-color: #111827 !important;
+        background: transparent !important;
+        color: #111827 !important;
+        font-weight: 700 !important;
+        box-shadow: none !important;
+      }
+      [class*="st-key-reward_row_"] {
+        margin: 0 0 0.12rem !important;
+      }
+      [class*="st-key-reward_row_"] [data-testid="stHorizontalBlock"] {
+        align-items: center !important;
+        gap: 0.32rem !important;
+      }
+      [class*="st-key-reward_row_"] [data-testid="stCheckbox"] {
+        width: 1.2rem !important;
+        min-width: 1.2rem !important;
+      }
+      [class*="st-key-reward_row_"] [data-testid="stCheckbox"] label {
+        padding: 0 !important;
+      }
+      [class*="st-key-replay_panel_"] {
+        padding: 0.55rem !important;
+        border-radius: 0.4rem !important;
+      }
+      [class*="st-key-replay_panel_"] [data-testid="stSelectbox"] label {
+        font-size: 0.72rem !important;
+      }
+      [class*="st-key-replay_controls_"] [data-testid="stHorizontalBlock"] {
+        align-items: center !important;
+        gap: 0.25rem !important;
+        flex-wrap: nowrap !important;
+      }
+      [class*="st-key-replay_controls_"] button {
+        width: 2rem !important;
+        min-width: 2rem !important;
+        min-height: 2rem !important;
+        padding: 0.1rem !important;
+        border-radius: 0.3rem !important;
+        font-size: 0.78rem !important;
+      }
+      [class*="st-key-replay_controls_"] [data-testid="stSelectbox"] {
+        width: 4.4rem !important;
+        min-width: 4.4rem !important;
+      }
+      [class*="st-key-replay_controls_"] [data-baseweb="select"] > div {
+        min-height: 2rem !important;
+        height: 2rem !important;
+        font-size: 0.75rem !important;
+      }
+      .st-key-page_environment_section,
+      .st-key-page_training_section,
+      .st-key-page_testing_section,
+      .st-key-page_models_section {
+        padding: 1rem 1.1rem 1.1rem !important;
+        margin-bottom: 1.15rem !important;
+        border-radius: 1rem !important;
+        box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+      }
+      .st-key-page_environment_section { background: linear-gradient(135deg, rgba(14, 165, 233, 0.075), rgba(20, 184, 166, 0.045)); }
+      .st-key-page_training_section { background: linear-gradient(135deg, rgba(139, 92, 246, 0.075), rgba(59, 130, 246, 0.04)); }
+      .st-key-page_testing_section { background: linear-gradient(135deg, rgba(245, 158, 11, 0.075), rgba(249, 115, 22, 0.04)); }
+      .st-key-page_models_section { background: linear-gradient(135deg, rgba(100, 116, 139, 0.085), rgba(15, 23, 42, 0.025)); }
       .transition-banner {
         padding: 0.85rem 1.25rem;
         background: linear-gradient(135deg, rgba(37, 99, 235, 0.2), rgba(16, 185, 129, 0.2));
@@ -308,6 +549,175 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+def style_reward_controls(widget_values: dict[str, float]) -> None:
+    """Color reward controls by sign without changing their numeric behavior."""
+    rules: list[str] = []
+    tones = {
+        "positive": ("#15803d", "rgba(21, 128, 61, 0.42)", "rgba(21, 128, 61, 0.08)"),
+        "negative": ("#dc2626", "rgba(220, 38, 38, 0.42)", "rgba(220, 38, 38, 0.08)"),
+        "neutral": ("#64748b", "rgba(100, 116, 139, 0.32)", "transparent"),
+    }
+    for key, raw_value in widget_values.items():
+        value = float(raw_value)
+        sign = "positive" if value > 0 else "negative" if value < 0 else "neutral"
+        color, border, background = tones[sign]
+        selector = f".st-key-{key}"
+        rules.extend(
+            [
+                f"{selector} input {{ color: {color} !important; -webkit-text-fill-color: {color} !important; font-weight: 800 !important; }}",
+                f"{selector} [data-testid='stNumberInputContainer'] {{ border-color: {border} !important; background: {background} !important; }}",
+                f"{selector} [data-testid='stNumberInputContainer'] button {{ color: {color} !important; }}",
+                f"{selector} [data-testid='stThumbValue'] {{ color: {color} !important; font-weight: 800 !important; }}",
+            ]
+        )
+    if rules:
+        st.sidebar.markdown(f"<style>{''.join(rules)}</style>", unsafe_allow_html=True)
+
+
+def render_reward_control(
+    *,
+    enabled_state_key: str,
+    event: str,
+    label: str,
+    value: float,
+    widget_key: str,
+    step: float,
+    number_format: str,
+    help_text: str,
+) -> tuple[float, float]:
+    """Render one compact reward toggle and numeric value on the same row."""
+    enabled_events = set(st.session_state[enabled_state_key])
+    with st.sidebar.container(key=f"reward_row_{widget_key}"):
+        toggle_column, value_column = st.columns(
+            [0.08, 0.92],
+            gap="small",
+            vertical_alignment="center",
+        )
+        with toggle_column:
+            enabled = st.checkbox(
+                f"Enable {label}",
+                value=event in enabled_events,
+                key=f"{widget_key}_enabled",
+                help=f"Enable or disable {label.lower()}.",
+                label_visibility="collapsed",
+                width="content",
+            )
+        with value_column:
+            configured_value = float(
+                st.number_input(
+                    label,
+                    value=float(value),
+                    step=step,
+                    format=number_format,
+                    disabled=not enabled,
+                    key=widget_key,
+                    help=help_text,
+                )
+            )
+
+    if enabled:
+        enabled_events.add(event)
+    else:
+        enabled_events.discard(event)
+    st.session_state[enabled_state_key] = enabled_events
+    return (configured_value if enabled else 0.0), configured_value
+
+
+def render_room_page_header(
+    room_num: int,
+    title: str,
+    algorithm: str,
+    description: str,
+) -> None:
+    page_id = f"room-{room_num}-overview"
+    st.markdown(
+        f'<div id="{page_id}" class="room-page-hero room-section-anchor">'
+        f'<div class="room-page-eyebrow">Room {room_num} · {algorithm}</div>'
+        f'<h1>{title}</h1><p>{description}</p></div>',
+        unsafe_allow_html=True,
+    )
+
+
+CONTROL_SECTIONS = ("Environment", "Training", "Testing", "Models")
+CONTROL_SECTION_META = {
+    "Environment": ("Env", "environment"),
+    "Training": ("Training", "training"),
+    "Testing": ("Testing", "testing"),
+    "Models": ("Model", "models"),
+}
+
+
+def _select_control_section(state_key: str, section: str, room_num: int) -> None:
+    st.session_state[state_key] = section
+    st.session_state.pending_room_section_scroll = f"room-{room_num}-{CONTROL_SECTION_META[section][1]}"
+
+
+def render_control_section_buttons(
+    room_num: int,
+    state_key: str,
+    help_text: str,
+) -> str:
+    st.session_state.setdefault(state_key, "Environment")
+    selected = str(st.session_state[state_key])
+    if selected not in CONTROL_SECTIONS:
+        selected = "Environment"
+        st.session_state[state_key] = selected
+
+    with st.sidebar.container(key="control_section_switcher"):
+        columns = st.columns(4, gap="small")
+        for column, section in zip(columns, CONTROL_SECTIONS):
+            label, _anchor = CONTROL_SECTION_META[section]
+            with column:
+                st.button(
+                    label,
+                    type="primary" if section == selected else "secondary",
+                    width="stretch",
+                    key=f"{state_key}_{section.lower()}_button",
+                    on_click=_select_control_section,
+                    args=(state_key, section, room_num),
+                    help=f"{help_text} Show {section.lower()} controls and jump to that page section.",
+                )
+    return selected
+
+
+def render_pending_room_section_scroll() -> None:
+    target = st.session_state.pop("pending_room_section_scroll", None)
+    if not target:
+        return
+    st.iframe(
+        f"""
+        <script>
+          window.setTimeout(() => {{
+            const target = window.parent.document.getElementById({target!r});
+            if (target) target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+          }}, 120);
+        </script>
+        """,
+        height=1,
+        width=1,
+        tab_index=-1,
+    )
+
+
+@contextmanager
+def room_page_section(
+    room_num: int,
+    section: str,
+    title: str,
+    description: str,
+):
+    st.markdown(
+        f'<div id="room-{room_num}-{section}" class="room-section-anchor"></div>',
+        unsafe_allow_html=True,
+    )
+    with st.container(border=True, key=f"page_{section}_section"):
+        st.markdown(
+            f'<div class="room-section-title"><h2>{title}</h2><p>{description}</p></div>',
+            unsafe_allow_html=True,
+        )
+        yield
 
 
 def initialize_state() -> None:
@@ -417,6 +827,7 @@ def initialize_state() -> None:
         ],
         "room4_pipe_count_v2": 3,
         "room4_reward_values": dict(DEFAULT_ROOM4_REWARDS),
+        "room4_reward_enabled": set(DEFAULT_ROOM4_REWARDS),
         "room4_result": None,
         "room4_result_environment": None,
         "room4_algorithm_config": None,
@@ -455,6 +866,7 @@ def initialize_state() -> None:
             "seed": 42,
         },
         "room5_reward_values": dict(DEFAULT_ROOM5_REWARDS),
+        "room5_reward_enabled": set(DEFAULT_ROOM5_REWARDS),
         "room5_result": None,
         "room5_result_environment": None,
         "room5_algorithm_config": None,
@@ -505,6 +917,150 @@ def metrics_dataframe(result) -> pd.DataFrame:
     return pd.DataFrame([asdict(metric) for metric in result.metrics])
 
 
+def _chart_frame(data: Any, x: str) -> pd.DataFrame:
+    """Return chart data with the requested X field as an ordinary column."""
+    frame = pd.DataFrame(data).copy()
+    if x not in frame.columns:
+        frame = frame.reset_index()
+    if x not in frame.columns:
+        raise ValueError(f"Chart X field {x!r} is missing from the supplied data.")
+    return frame
+
+
+def _altair_field_type(series: pd.Series) -> str:
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return "temporal"
+    if pd.api.types.is_numeric_dtype(series):
+        return "quantitative"
+    return "nominal"
+
+
+def render_locked_line_chart(
+    data: Any,
+    *,
+    x: str,
+    y: str | list[str],
+    x_label: str,
+    y_label: str,
+    target: Any = st,
+) -> None:
+    """Render a tooltip-enabled line chart with no pan or zoom bindings."""
+    frame = _chart_frame(data, x)
+    y_fields = [y] if isinstance(y, str) else list(y)
+    x_encoding = alt.X(field=x, type=_altair_field_type(frame[x]), title=x_label)
+
+    if len(y_fields) == 1:
+        y_field = y_fields[0]
+        chart = alt.Chart(frame).mark_line(point=False, strokeWidth=2.2).encode(
+            x=x_encoding,
+            y=alt.Y(
+                field=y_field,
+                type="quantitative",
+                title=y_label,
+                scale=alt.Scale(zero=False),
+            ),
+            tooltip=[
+                alt.Tooltip(field=x, type=_altair_field_type(frame[x]), title=x_label),
+                alt.Tooltip(field=y_field, type="quantitative", title=y_label, format=".4g"),
+            ],
+        )
+    else:
+        tidy = frame.melt(
+            id_vars=[x], value_vars=y_fields, var_name="Series", value_name="Value"
+        )
+        chart = alt.Chart(tidy).mark_line(point=False, strokeWidth=2.2).encode(
+            x=alt.X(field=x, type=_altair_field_type(tidy[x]), title=x_label),
+            y=alt.Y(
+                field="Value",
+                type="quantitative",
+                title=y_label,
+                scale=alt.Scale(zero=False),
+            ),
+            color=alt.Color(field="Series", type="nominal", title="Metric"),
+            tooltip=[
+                alt.Tooltip(field=x, type=_altair_field_type(tidy[x]), title=x_label),
+                alt.Tooltip(field="Series", type="nominal", title="Metric"),
+                alt.Tooltip(field="Value", type="quantitative", title=y_label, format=".4g"),
+            ],
+        )
+
+    # Deliberately omit interactive scale bindings: axes stay fixed while hover
+    # tooltips remain available.
+    target.altair_chart(chart.properties(height=300), width="stretch")
+
+
+def render_locked_bar_chart(
+    data: Any,
+    *,
+    x: str,
+    y: str,
+    x_label: str,
+    y_label: str,
+    target: Any = st,
+) -> None:
+    """Render a fixed-axis bar chart with no pan or zoom bindings."""
+    frame = _chart_frame(data, x)
+    chart = alt.Chart(frame).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
+        x=alt.X(field=x, type=_altair_field_type(frame[x]), title=x_label),
+        y=alt.Y(field=y, type="quantitative", title=y_label),
+        tooltip=[
+            alt.Tooltip(field=x, type=_altair_field_type(frame[x]), title=x_label),
+            alt.Tooltip(field=y, type="quantitative", title=y_label, format=".4g"),
+        ],
+    )
+    target.altair_chart(chart.properties(height=300), width="stretch")
+
+
+def render_algorithm_overview(room_num: int) -> None:
+    """Explain the RL contract before the room's environment controls and visual."""
+    room1_algorithm = st.session_state.get("room1_algorithm", "Policy Iteration")
+    overviews = {
+        1: {
+            "algorithm": room1_algorithm,
+            "summary": "A dynamic-programming method that uses the complete transition and reward model to compute a policy for every walkable cell.",
+            "input": "Current grid cell, legal transitions, icy-cell probabilities, terminal states, and configured rewards.",
+            "output": "A state-value V(s) and one selected action for every walkable grid state.",
+            "actions": "UP, DOWN, LEFT, RIGHT. Illegal boundary and wall moves are excluded.",
+        },
+        2: {
+            "algorithm": "SARSA",
+            "summary": "An on-policy temporal-difference algorithm that learns from the action actually selected in the next state.",
+            "input": "Current grid cell, selected action, received reward, next cell, and the next epsilon-greedy action.",
+            "output": "A learned Q(s, a) table and its derived epsilon-greedy navigation policy.",
+            "actions": "UP, DOWN, LEFT, RIGHT. Icy cells can make the executed movement stochastic.",
+        },
+        3: {
+            "algorithm": "Q-Learning",
+            "summary": "An off-policy temporal-difference algorithm that learns toward the best estimated next action while still exploring.",
+            "input": "Current grid cell, selected action, reward, next cell, and the maximum Q-value available there.",
+            "output": "A learned Q(s, a) table and a greedy four-direction navigation policy.",
+            "actions": "UP, DOWN, LEFT, RIGHT. Illegal boundary and wall moves are excluded.",
+        },
+        4: {
+            "algorithm": "PPO actor-critic",
+            "summary": "A neural policy-gradient algorithm that learns continuous-space obstacle avoidance while clipping overly large policy updates.",
+            "input": "Four continuous values: X position, Y position, horizontal velocity, and vertical velocity.",
+            "output": "Probabilities for nine actions plus a critic estimate of the current state's expected return.",
+            "actions": "Each action selects discrete horizontal and vertical velocities from {-1, 0, +1} m/s: eight directions (including diagonals) and HOVER (0, 0).",
+        },
+        5: {
+            "algorithm": "PPO actor-critic",
+            "summary": "A neural policy-gradient algorithm that learns lane selection and overtaking from a fixed-size road observation.",
+            "input": "9 values: six indicators for the agent's own lane, the front-to-rear edge clearance and closing speed for the nearest car in that lane only, and road progress. Adjacent-lane cars are not observed.",
+            "output": "Probabilities for three driving actions plus a critic estimate of the current state's expected return.",
+            "actions": "LEFT lane change, KEEP_LANE, and RIGHT lane change.",
+        },
+    }
+    overview = overviews[room_num]
+    with st.container(border=True):
+        st.markdown(f"#### How {overview['algorithm']} interacts with this room")
+        st.caption(overview["summary"])
+        input_col, output_col, actions_col = st.columns(3)
+        input_col.markdown(f"**Input / observation**\n\n{overview['input']}")
+        output_col.markdown(f"**Model output**\n\n{overview['output']}")
+        actions_col.markdown(f"**Available actions**\n\n{overview['actions']}")
+
+
 def test_dataframe(results) -> pd.DataFrame:
     return pd.DataFrame(
         [
@@ -538,16 +1094,23 @@ def render_room_navigation() -> str:
                 '</div>',
                 unsafe_allow_html=True,
             )
-        for room in reversed(rooms):
-            selected = st.button(
-                room,
-                key=f"navigate_{room.lower().replace(' ', '_')}",
-                type="primary" if room == active_room else "secondary",
-                width="content",
-            )
-            if selected and room != active_room:
-                st.session_state.active_room = room
-                st.rerun()
+        with st.container(
+            key="room_nav_buttons",
+            horizontal=True,
+            vertical_alignment="center",
+            gap="small",
+        ):
+            for room in rooms:
+                selected = st.button(
+                    room,
+                    key=f"navigate_{room.lower().replace(' ', '_')}",
+                    type="primary" if room == active_room else "secondary",
+                    width="content",
+                )
+                if selected and room != active_room:
+                    st.session_state.active_room = room
+                    st.session_state.pop("pending_room_section_scroll", None)
+                    st.rerun()
     return st.session_state.active_room
 
 
@@ -927,15 +1490,17 @@ def render_grid_editor(room_num: int) -> None:
                                 invalidate_room_model(room_num)
 
 
-def render_environment_page(room_num: int) -> None:
+def render_environment_page(room_num: int, *, show_header: bool = True) -> None:
     p = room_prefix(room_num)
     room1_algo = st.session_state.get("room1_algorithm", "Policy Iteration")
     algo_names = {1: room1_algo, 2: "SARSA", 3: "Q-Learning"}
-    st.markdown(
-        f'<div class="room-header"><h1>Room {room_num} — Environment ({algo_names[room_num]})</h1>'
-        '<p>Click any grid cell below to configure it as normal, icy, or a wall.</p></div>',
-        unsafe_allow_html=True,
-    )
+    if show_header:
+        st.markdown(
+            f'<div class="room-header"><h1>Room {room_num} — Environment ({algo_names[room_num]})</h1>'
+            '<p>Click any grid cell below to configure it as normal, icy, or a wall.</p></div>',
+            unsafe_allow_html=True,
+        )
+    render_algorithm_overview(room_num)
     walls = st.session_state[f"{p}_walls"]
     slippery = st.session_state[f"{p}_slippery"]
     terminals = st.session_state[f"{p}_terminal_states"]
@@ -995,7 +1560,7 @@ def render_episode_replay_visualizer(
         ep = episodes[index]
         reward_val = getattr(ep, "total_reward", 0.0)
         success_val = getattr(ep, "success", False)
-        status_str = "Success ✅" if success_val else "Failed ❌"
+        status_str = "Success" if success_val else "Failed"
         extra = ""
         if hasattr(ep, "pipes_passed"):
             extra = f", Pipes: {ep.pipes_passed}"
@@ -1003,90 +1568,108 @@ def render_episode_replay_visualizer(
             extra = f", Overtakes: {ep.overtakes}"
         elif hasattr(ep, "slipped_count") and ep.slipped_count > 0:
             extra = f", Slips: {ep.slipped_count}"
-        return f"Episode {getattr(ep, 'episode', index + 1)} ({status_str}, Reward: {reward_val:.2f}{extra})"
+        return f"Episode {getattr(ep, 'episode', index + 1)} · {status_str} · R {reward_val:.2f}{extra}"
 
     def on_ep_change() -> None:
         st.session_state[f"{key_prefix}_is_playing"] = False
         st.session_state[f"{key_prefix}_step"] = 0
 
-    ep_select_key = f"{key_prefix}_select"
-    selected_idx = st.selectbox(
-        "Select episode to replay",
-        options=list(range(len(episodes))),
-        format_func=format_ep_option,
-        key=ep_select_key,
-        on_change=on_ep_change,
-        help="Choose which recorded episode to replay.",
-    )
-
-    selected_ep = episodes[selected_idx]
-    trajectory = getattr(selected_ep, "trajectory", [])
-    if not trajectory:
-        st.info("This episode has an empty trajectory.")
-        return
-
-    total_steps = len(trajectory)
-
     step_key = f"{key_prefix}_step"
     playing_key = f"{key_prefix}_is_playing"
+    ep_select_key = f"{key_prefix}_select"
 
-    if step_key not in st.session_state:
-        st.session_state[step_key] = 0
-    if playing_key not in st.session_state:
-        st.session_state[playing_key] = False
-
-    if st.session_state[step_key] >= total_steps:
-        st.session_state[step_key] = 0
-
-    is_playing = st.session_state[playing_key]
-
-    col_prev, col_toggle, col_next, col_speed = st.columns([1, 1, 1, 2], vertical_alignment="bottom")
-
-    with col_prev:
-        if st.button("◀ Step Back", key=f"{key_prefix}_btn_prev", use_container_width=True, help="Step back 1 timestep (Keyboard: Left Arrow ←)"):
-            st.session_state[playing_key] = False
-            st.session_state[step_key] = max(0, st.session_state[step_key] - 1)
-            st.rerun()
-
-    with col_toggle:
-        toggle_label = "⏸ Pause" if is_playing else "▶ Play"
-        if st.button(toggle_label, key=f"{key_prefix}_btn_toggle", type="primary" if not is_playing else "secondary", use_container_width=True, help="Play/Pause automatic replay (Keyboard: Spacebar)"):
-            st.session_state[playing_key] = not is_playing
-            if st.session_state[playing_key] and st.session_state[step_key] >= total_steps - 1:
-                st.session_state[step_key] = 0
-            st.rerun()
-
-    with col_next:
-        if st.button("Step Next ▶", key=f"{key_prefix}_btn_next", use_container_width=True, help="Step forward 1 timestep (Keyboard: Right Arrow →)"):
-            st.session_state[playing_key] = False
-            st.session_state[step_key] = min(total_steps - 1, st.session_state[step_key] + 1)
-            st.rerun()
-
-    with col_speed:
-        playback_speed = st.select_slider(
-            "Playback speed",
-            options=[0.5, 1.0, 2.0, 4.0],
-            value=1.0,
-            format_func=lambda val: f"{val:g}×",
-            key=f"{key_prefix}_speed",
-            help="Controls auto-play speed.",
-        )
-
-    def on_slider_change() -> None:
-        st.session_state[playing_key] = False
-        st.session_state[step_key] = int(st.session_state[f"{key_prefix}_slider_widget"])
-
-    st.slider(
-        "Timeline step",
-        min_value=0,
-        max_value=total_steps - 1,
-        value=st.session_state[step_key],
-        key=f"{key_prefix}_slider_widget",
-        on_change=on_slider_change,
-        help="Drag to jump to any recorded timestep.",
+    visual_column, control_column = st.columns(
+        [4.5, 1.5],
+        gap="medium",
+        vertical_alignment="top",
     )
+    with visual_column:
+        replay_frame = st.empty()
 
-    st.caption("💡 Keyboard shortcuts: **← Left Arrow** (Step Back) | **→ Right Arrow** (Step Forward) | **Space** (Play/Pause)")
+    with control_column:
+        with st.container(border=True, key=f"replay_panel_{key_prefix}"):
+            selected_idx = st.selectbox(
+                "Episode",
+                options=list(range(len(episodes))),
+                format_func=format_ep_option,
+                key=ep_select_key,
+                on_change=on_ep_change,
+                help="Choose which recorded episode to replay.",
+            )
+
+            selected_ep = episodes[selected_idx]
+            trajectory = getattr(selected_ep, "trajectory", [])
+            if not trajectory:
+                replay_frame.info("This episode has an empty trajectory.")
+                return
+
+            total_steps = len(trajectory)
+
+            if step_key not in st.session_state:
+                st.session_state[step_key] = 0
+            if playing_key not in st.session_state:
+                st.session_state[playing_key] = False
+
+            if st.session_state[step_key] >= total_steps:
+                st.session_state[step_key] = 0
+
+            is_playing = st.session_state[playing_key]
+
+            with st.container(
+                key=f"replay_controls_{key_prefix}",
+                horizontal=True,
+                vertical_alignment="center",
+                gap="small",
+            ):
+                previous_clicked = st.button(
+                    "←",
+                    key=f"{key_prefix}_btn_prev",
+                    width="content",
+                    help="Previous timestep (Left Arrow)",
+                )
+                toggle_label = "Ⅱ" if is_playing else "▶"
+                toggle_clicked = st.button(
+                    toggle_label,
+                    key=f"{key_prefix}_btn_toggle",
+                    type="primary" if not is_playing else "secondary",
+                    width="content",
+                    help="Play or pause replay (Spacebar)",
+                )
+                next_clicked = st.button(
+                    "→",
+                    key=f"{key_prefix}_btn_next",
+                    width="content",
+                    help="Next timestep (Right Arrow)",
+                )
+                playback_speed = st.selectbox(
+                    "Speed",
+                    options=[0.5, 1.0, 2.0, 4.0],
+                    index=1,
+                    format_func=lambda val: f"{val:g}×",
+                    key=f"{key_prefix}_speed",
+                    help="Controls auto-play speed.",
+                    label_visibility="collapsed",
+                    width=70,
+                )
+
+            if previous_clicked:
+                st.session_state[playing_key] = False
+                st.session_state[step_key] = max(0, st.session_state[step_key] - 1)
+                st.rerun()
+
+            if toggle_clicked:
+                st.session_state[playing_key] = not is_playing
+                if st.session_state[playing_key] and st.session_state[step_key] >= total_steps - 1:
+                    st.session_state[step_key] = 0
+                st.rerun()
+
+            if next_clicked:
+                st.session_state[playing_key] = False
+                st.session_state[step_key] = min(total_steps - 1, st.session_state[step_key] + 1)
+                st.rerun()
+
+            replay_status = st.empty()
+            st.caption("←/→ step · Space play/pause")
 
     # Inject Keyboard Shortcuts JS Script
     js_listener = f"""
@@ -1103,22 +1686,19 @@ def render_episode_replay_visualizer(
         }}
 
         if (e.key === 'ArrowLeft') {{
-          const buttons = Array.from(doc.querySelectorAll('button'));
-          const btn = buttons.find(b => b.textContent.includes('◀ Step Back') || b.textContent.includes('Step Back'));
+          const btn = doc.querySelector('.st-key-{key_prefix}_btn_prev button');
           if (btn) {{
             e.preventDefault();
             btn.click();
           }}
         }} else if (e.key === 'ArrowRight') {{
-          const buttons = Array.from(doc.querySelectorAll('button'));
-          const btn = buttons.find(b => b.textContent.includes('Step Next ▶') || b.textContent.includes('Step Next'));
+          const btn = doc.querySelector('.st-key-{key_prefix}_btn_next button');
           if (btn) {{
             e.preventDefault();
             btn.click();
           }}
         }} else if (e.key === ' ' || e.code === 'Space') {{
-          const buttons = Array.from(doc.querySelectorAll('button'));
-          const btn = buttons.find(b => b.textContent.includes('▶ Play') || b.textContent.includes('⏸ Pause'));
+          const btn = doc.querySelector('.st-key-{key_prefix}_btn_toggle button');
           if (btn) {{
             e.preventDefault();
             btn.click();
@@ -1128,17 +1708,14 @@ def render_episode_replay_visualizer(
     }})();
     </script>
     """
-    components.html(js_listener, height=0, width=0)
-
-    replay_status = st.empty()
-    replay_frame = st.empty()
+    st.iframe(js_listener, height=1, width=1, tab_index=-1)
 
     def render_single_step(step_idx: int) -> None:
         step_info = trajectory[step_idx]
 
         if room_num in (1, 2, 3):
             action_name = getattr(step_info.action, "value", str(step_info.action))
-            replay_status.info(
+            replay_status.caption(
                 f"Timestep {step_idx + 1}/{total_steps} • "
                 f"Action `{action_name}` • Outcome `{getattr(step_info, 'outcome', 'normal')}` • "
                 f"Reward {step_info.reward:.3f} • Cumulative {step_info.cumulative_reward:.3f}"
@@ -1154,7 +1731,7 @@ def render_episode_replay_visualizer(
             )
         elif room_num == 4:
             st_val = step_info.state
-            replay_status.info(
+            replay_status.caption(
                 f"Step {step_info.timestep}/{total_steps} • "
                 f"State: (x={st_val[0]:.2f}, y={st_val[1]:.2f}, Vx={st_val[2]:.1f}, Vy={st_val[3]:.1f}) • "
                 f"Action: {step_info.action.name} • Step reward: {step_info.reward:.2f} • "
@@ -1170,7 +1747,7 @@ def render_episode_replay_visualizer(
                 unsafe_allow_html=True,
             )
         elif room_num == 5:
-            replay_status.info(
+            replay_status.caption(
                 f"Step {step_info.timestep}/{total_steps} • Action: {step_info.action.name} • "
                 f"Reward: {step_info.reward:.2f} • Cumulative: {step_info.cumulative_reward:.2f} • "
                 f"Events: {', '.join(step_info.events)}"
@@ -1198,7 +1775,7 @@ def render_episode_replay_visualizer(
             if step_i < total_steps - 1:
                 time.sleep(delay)
         st.session_state[playing_key] = False
-        replay_status.success(
+        replay_status.caption(
             "Replay complete." if getattr(selected_ep, "success", False) else "Replay complete — episode ended without reaching goal."
         )
     else:
@@ -1206,15 +1783,21 @@ def render_episode_replay_visualizer(
 
 
 
-def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
+def render_training_page(
+    room_num: int,
+    requests: dict[str, bool],
+    *,
+    show_header: bool = True,
+) -> None:
 
     p = room_prefix(room_num)
     room1_algo = st.session_state.get("room1_algorithm", "Policy Iteration")
     algo_names = {1: room1_algo, 2: "SARSA", 3: "Q-Learning"}
-    st.markdown(
-        f'<div class="room-header"><h1>Room {room_num} — Training ({algo_names[room_num]})</h1></div>',
-        unsafe_allow_html=True,
-    )
+    if show_header:
+        st.markdown(
+            f'<div class="room-header"><h1>Room {room_num} — Training ({algo_names[room_num]})</h1></div>',
+            unsafe_allow_html=True,
+        )
     if requests["reset"]:
         invalidate_room_model(room_num)
         st.rerun()
@@ -1245,8 +1828,8 @@ def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
                         return
                     df = pd.DataFrame(live_rows)
                     status_slot.info(f"Value Iteration sweep {metric.iteration} • delta={metric.delta:.3e}")
-                    chart_slot_1.line_chart(df.set_index("global_step")[["delta"]], x_label="Sweep", y_label="Delta")
-                    chart_slot_2.line_chart(df.set_index("global_step")[["mean_value"]], x_label="Sweep", y_label="Mean V(s)")
+                    render_locked_line_chart(df, x="global_step", y="delta", x_label="Sweep", y_label="Delta", target=chart_slot_1)
+                    render_locked_line_chart(df, x="global_step", y="mean_value", x_label="Sweep", y_label="Mean V(s)", target=chart_slot_2)
 
                 with st.spinner("Computing Value Iteration..."):
                     res = run_value_iteration(env, alg_config, callback=callback_vi)
@@ -1267,8 +1850,8 @@ def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
                     status_slot.info(f"Policy Iteration {metric.policy_iteration} • sweep {metric.evaluation_sweep} • delta={metric.delta:.3e}")
                     eval_df = df[df["phase"] == "evaluation"]
                     if not eval_df.empty:
-                        chart_slot_1.line_chart(eval_df.set_index("global_step")[["delta"]], x_label="Sweep", y_label="Delta")
-                        chart_slot_2.line_chart(eval_df.set_index("global_step")[["mean_value"]], x_label="Sweep", y_label="Mean V(s)")
+                        render_locked_line_chart(eval_df, x="global_step", y="delta", x_label="Sweep", y_label="Delta", target=chart_slot_1)
+                        render_locked_line_chart(eval_df, x="global_step", y="mean_value", x_label="Sweep", y_label="Mean V(s)", target=chart_slot_2)
 
                 with st.spinner("Computing Policy Iteration..."):
                     res = run_policy_iteration(env, alg_config, callback=callback_pi)
@@ -1290,8 +1873,8 @@ def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
                     return
                 df = pd.DataFrame(live_rows)
                 status_slot.info(f"SARSA Episode {metric.episode}/{controls['episodes']} • reward={metric.total_reward:.2f} • eps={metric.epsilon:.3f}")
-                chart_slot_1.line_chart(df.set_index("episode")[["total_reward"]], x_label="Episode", y_label="Total Reward")
-                chart_slot_2.line_chart(df.set_index("episode")[["epsilon"]], x_label="Episode", y_label="Epsilon")
+                render_locked_line_chart(df, x="episode", y="total_reward", x_label="Episode", y_label="Total Reward", target=chart_slot_1)
+                render_locked_line_chart(df, x="episode", y="epsilon", x_label="Episode", y_label="Epsilon", target=chart_slot_2)
 
             with st.spinner("Training SARSA agent..."):
                 res = run_sarsa(env, alg_config, callback=callback_sarsa)
@@ -1313,8 +1896,8 @@ def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
                     return
                 df = pd.DataFrame(live_rows)
                 status_slot.info(f"Q-Learning Episode {metric.episode}/{controls['episodes']} • reward={metric.total_reward:.2f} • eps={metric.epsilon:.3f}")
-                chart_slot_1.line_chart(df.set_index("episode")[["total_reward"]], x_label="Episode", y_label="Total Reward")
-                chart_slot_2.line_chart(df.set_index("episode")[["epsilon"]], x_label="Episode", y_label="Epsilon")
+                render_locked_line_chart(df, x="episode", y="total_reward", x_label="Episode", y_label="Total Reward", target=chart_slot_1)
+                render_locked_line_chart(df, x="episode", y="epsilon", x_label="Episode", y_label="Epsilon", target=chart_slot_2)
 
             with st.spinner("Training Q-Learning agent..."):
                 res = run_q_learning(env, alg_config, callback=callback_ql)
@@ -1323,7 +1906,18 @@ def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
         st.session_state[f"{p}_result_environment"] = env
         st.session_state[f"{p}_algorithm_config"] = alg_config
         st.session_state[f"{p}_test_results"] = None
-        status_slot.success(f"Training completed successfully!")
+        st.session_state[f"{p}_training_notice"] = "Training completed successfully."
+        for replay_key in (
+            f"{p}_tr_replay_select",
+            f"{p}_tr_replay_step",
+            f"{p}_tr_replay_is_playing",
+        ):
+            st.session_state.pop(replay_key, None)
+        st.rerun()
+
+    training_notice = st.session_state.pop(f"{p}_training_notice", None)
+    if training_notice:
+        st.success(training_notice)
 
     res = st.session_state[f"{p}_result"]
     env = st.session_state[f"{p}_result_environment"]
@@ -1352,8 +1946,10 @@ def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
         st.subheader("Value / Delta Convergence")
         y_col = "delta" if room_num == 1 else "total_reward"
         x_col = "global_step" if room_num == 1 else "episode"
-        st.line_chart(
-            frame.set_index(x_col)[[y_col]],
+        render_locked_line_chart(
+            frame,
+            x=x_col,
+            y=y_col,
             x_label="Bellman sweep" if room_num == 1 else "Training episode",
             y_label="Maximum value delta" if room_num == 1 else "Episode total reward",
         )
@@ -1367,8 +1963,10 @@ def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
             y_col2 = "epsilon"
             x_col2 = "episode"
             x_label2 = "Training episode"
-        st.line_chart(
-            frame.set_index(x_col2)[[y_col2]],
+        render_locked_line_chart(
+            frame,
+            x=x_col2,
+            y=y_col2,
             x_label=x_label2,
             y_label="Changed actions" if room_num == 1 else "Exploration epsilon",
         )
@@ -1398,13 +1996,19 @@ def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
         )
 
 
-def render_test_page(room_num: int, run_requested: bool) -> None:
+def render_test_page(
+    room_num: int,
+    run_requested: bool,
+    *,
+    show_header: bool = True,
+) -> None:
     p = room_prefix(room_num)
-    st.markdown(
-        f'<div class="room-header"><h1>Room {room_num} — Testing</h1>'
-        '<p>Evaluate the trained policy without updating values or Q-tables.</p></div>',
-        unsafe_allow_html=True,
-    )
+    if show_header:
+        st.markdown(
+            f'<div class="room-header"><h1>Room {room_num} — Testing</h1>'
+            '<p>Evaluate the trained policy without updating values or Q-tables.</p></div>',
+            unsafe_allow_html=True,
+        )
     res = st.session_state[f"{p}_result"]
     env = st.session_state[f"{p}_result_environment"]
     if res is None or env is None:
@@ -1441,15 +2045,19 @@ def render_test_page(room_num: int, run_requested: bool) -> None:
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Timesteps by episode")
-        st.bar_chart(
-            frame.set_index("episode")[["timesteps"]],
+        render_locked_bar_chart(
+            frame,
+            x="episode",
+            y="timesteps",
             x_label="Test episode",
             y_label="Timesteps used",
         )
     with c2:
         st.subheader("Reward by episode")
-        st.line_chart(
-            frame.set_index("episode")[["total_reward"]],
+        render_locked_line_chart(
+            frame,
+            x="episode",
+            y="total_reward",
             x_label="Test episode",
             y_label="Total reward",
         )
@@ -1469,14 +2077,19 @@ def render_test_page(room_num: int, run_requested: bool) -> None:
 
 
 
-def render_models_page(room_num: int) -> None:
+def render_models_page(room_num: int, *, show_header: bool = True) -> None:
     p = room_prefix(room_num)
-    algo_names = {1: "Policy Iteration", 2: "SARSA", 3: "Q-Learning"}
-    st.markdown(
-        f'<div class="room-header"><h1>Room {room_num} — Models ({algo_names[room_num]})</h1>'
-        '<p>Download or upload a portable JSON model artifact.</p></div>',
-        unsafe_allow_html=True,
-    )
+    algo_names = {
+        1: st.session_state.get("room1_algorithm", "Policy Iteration"),
+        2: "SARSA",
+        3: "Q-Learning",
+    }
+    if show_header:
+        st.markdown(
+            f'<div class="room-header"><h1>Room {room_num} — Models ({algo_names[room_num]})</h1>'
+            '<p>Download or upload a portable JSON model artifact.</p></div>',
+            unsafe_allow_html=True,
+        )
     res = st.session_state[f"{p}_result"]
     env = st.session_state[f"{p}_result_environment"]
     config = st.session_state[f"{p}_algorithm_config"]
@@ -1504,11 +2117,10 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
     algo_names = {1: "Policy Iteration", 2: "SARSA", 3: "Q-Learning"}
     st.sidebar.title(f"Room {room_num} Controls")
     st.sidebar.caption(f"Model • {algo_names[room_num]}")
-    section = st.sidebar.radio(
-        "Control section",
-        options=["Environment", "Training", "Testing", "Models"],
-        key=f"{p}_control_section",
-        help="Choose which group of room controls is shown in the left sidebar.",
+    section = render_control_section_buttons(
+        room_num,
+        f"{p}_control_section",
+        "Choose the sidebar controls and jump to the matching section on this room page.",
     )
     st.sidebar.divider()
 
@@ -1594,32 +2206,26 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
             st.rerun()
 
         st.sidebar.subheader("Reward configuration")
+        reward_widget_values: dict[str, float] = {}
         for event, description in SUPPORTED_REWARD_EVENTS.items():
-            enabled = st.sidebar.checkbox(
-                description,
-                value=event in st.session_state[f"{p}_reward_enabled"],
-                key=f"{p}_reward_enabled_{event}",
-                help=f"Enable or disable the global reward event: {description.lower()}.",
-            )
             previous_enabled = event in st.session_state[f"{p}_reward_enabled"]
             previous_value = st.session_state[f"{p}_reward_values"].get(event, 0.0)
-            value = st.sidebar.number_input(
-                f"{description} value",
-                value=float(st.session_state[f"{p}_reward_values"].get(event, 0.0)),
+            actual_value, configured_value = render_reward_control(
+                enabled_state_key=f"{p}_reward_enabled",
+                event=event,
+                label=description,
+                value=float(previous_value),
+                widget_key=f"{p}_reward_value_{event}",
                 step=0.1,
-                format="%.3f",
-                disabled=not enabled,
-                key=f"{p}_reward_value_{event}",
-                help="The reward added whenever this event occurs. Positive attracts; negative penalizes.",
+                number_format="%.3f",
+                help_text="The reward added whenever this event occurs. Positive attracts; negative penalizes.",
             )
-            if enabled:
-                st.session_state[f"{p}_reward_enabled"].add(event)
-                st.session_state[f"{p}_reward_values"][event] = float(value)
-            else:
-                st.session_state[f"{p}_reward_enabled"].discard(event)
-                st.session_state[f"{p}_reward_values"][event] = 0.0
-            if previous_enabled != enabled or previous_value != st.session_state[f"{p}_reward_values"][event]:
+            reward_widget_values[f"{p}_reward_value_{event}"] = configured_value
+            st.session_state[f"{p}_reward_values"][event] = actual_value
+            currently_enabled = event in st.session_state[f"{p}_reward_enabled"]
+            if previous_enabled != currently_enabled or previous_value != actual_value:
                 invalidate_room_model(room_num)
+        style_reward_controls(reward_widget_values)
 
     elif section == "Training":
         controls = st.session_state[f"{p}_training_controls"]
@@ -1837,15 +2443,48 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
 
 
 def render_room(room_num: int) -> None:
-    section, requests, run_test = render_room_controls(room_num)
-    if section == "Environment":
-        render_environment_page(room_num)
-    elif section == "Training":
-        render_training_page(room_num, requests)
-    elif section == "Testing":
-        render_test_page(room_num, run_test)
-    else:
-        render_models_page(room_num)
+    _section, requests, run_test = render_room_controls(room_num)
+    room1_algo = st.session_state.get("room1_algorithm", "Policy Iteration")
+    algorithms = {1: room1_algo, 2: "SARSA", 3: "Q-Learning"}
+    descriptions = {
+        1: "Design the grid, compute an exact dynamic-programming policy, inspect convergence, and validate the solution from one continuous workspace.",
+        2: "Configure the icy grid and follow the on-policy SARSA workflow from exploration through evaluation and replay.",
+        3: "Build the room, train an off-policy Q-Learning agent, and compare its learned behavior with deterministic tests.",
+    }
+    render_room_page_header(
+        room_num,
+        "Grid escape workspace",
+        algorithms[room_num],
+        descriptions[room_num],
+    )
+    with room_page_section(
+        room_num,
+        "environment",
+        "Environment and algorithm",
+        "Edit the complete 10×10 map and review exactly what the agent observes and can do.",
+    ):
+        render_environment_page(room_num, show_header=False)
+    with room_page_section(
+        room_num,
+        "training",
+        "Training and learned policy",
+        "Live progress, final policy, convergence charts, and training-episode replay stay together.",
+    ):
+        render_training_page(room_num, requests, show_header=False)
+    with room_page_section(
+        room_num,
+        "testing",
+        "Deterministic testing",
+        "Evaluate the stored policy without learning and inspect episode-level results and replay.",
+    ):
+        render_test_page(room_num, run_test, show_header=False)
+    with room_page_section(
+        room_num,
+        "models",
+        "Model information",
+        "Inspect the model currently held in memory; import and export actions remain in the sidebar.",
+    ):
+        render_models_page(room_num, show_header=False)
 
 
 # =====================================================================
@@ -1853,8 +2492,8 @@ def render_room(room_num: int) -> None:
 # =====================================================================
 
 ROOM4_CONTROL_HELP = {
-    "section": "Choose which Room 4 workspace to display: configure the environment, train PPO, test a trained network, or manage saved model files.",
-    "pipe_count": "Sets the number of obstacles. Whenever this value changes, all pipes are redistributed at equal horizontal distances between 2m and 8m so the layout remains valid, including five pipes.",
+    "section": "Choose which Room 4 control group appears in the sidebar. The full environment, training, testing, and model dashboard remains visible on the page.",
+    "pipe_count": "Sets any positive number of obstacles. Whenever this value changes, all pipes are redistributed at equal horizontal distances between 2m and 8m.",
     "pipe_x": "The horizontal center of this pipe in meters. Moving it changes where the agent must pass the obstacle; avoid overlapping another pipe or the goal zone.",
     "pipe_width": "The horizontal thickness of the pipe. A wider pipe occupies more travel distance and makes collision avoidance harder.",
     "gap_start": "The height, in meters, where the safe opening begins. It controls the lower edge of the gap and therefore the vertical route the agent must learn.",
@@ -1862,6 +2501,8 @@ ROOM4_CONTROL_HELP = {
     "step_reward": "Reward added on every timestep. A small negative value encourages shorter solutions; a stronger penalty may make the agent overly cautious about exploring.",
     "progress_reward": "Reward multiplier for positive horizontal progress. The reward is multiplied by the distance moved to the right during that timestep.",
     "backward_reward": "Reward added whenever the agent moves left, including diagonal left actions. Use a negative value to penalize backward movement, or zero to ignore it.",
+    "hover_reward": "Penalty applied specifically when PPO selects HOVER. It is added on top of the ordinary step reward and the non-right-action penalty.",
+    "non_right_reward": "Penalty applied whenever an action has no rightward horizontal component: left, vertical, or HOVER. Diagonal right actions still count as rightward progress.",
     "pipe_reward": "One-time reward received when the agent crosses a pipe's horizontal center from left to right. Larger values emphasize obstacle completion.",
     "goal_reward": "Terminal reward received for reaching the goal zone. It should normally be large enough to outweigh accumulated step penalties.",
     "collision_reward": "Terminal penalty applied after hitting a wall, floor, ceiling, or pipe. More negative values teach stronger collision avoidance.",
@@ -1911,9 +2552,10 @@ def _sync_room4_pipe_widget_state(
 def _redistribute_room4_pipes() -> None:
     pipe_count = int(st.session_state.room4_pipe_count_v2)
     pipes = distribute_pipes_evenly(list(st.session_state.room4_pipes), pipe_count)
+    previous_count = len(st.session_state.room4_pipes)
     st.session_state.room4_pipes = pipes
     _sync_room4_pipe_widget_state(pipes, overwrite=True)
-    for idx in range(pipe_count, 5):
+    for idx in range(pipe_count, previous_count):
         for suffix in ("x", "w", "gs", "gz"):
             st.session_state.pop(f"p_{idx}_{suffix}", None)
     st.session_state.room4_result = None
@@ -1947,11 +2589,10 @@ def build_room4_environment() -> Room4Environment:
 
 def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
     st.sidebar.title("Room 4 Controls (PPO)")
-    section = st.sidebar.radio(
-        "Control section",
-        options=["Environment", "Training", "Testing", "Models"],
-        key="room4_control_section",
-        help=ROOM4_CONTROL_HELP["section"],
+    section = render_control_section_buttons(
+        4,
+        "room4_control_section",
+        ROOM4_CONTROL_HELP["section"],
     )
 
     requests: dict[str, bool] = {"train": False, "reset": False}
@@ -1964,11 +2605,11 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
             current_pipes
         ):
             st.session_state.room4_pipe_count_v2 = len(current_pipes)
-        st.sidebar.slider(
+        st.sidebar.number_input(
             "Number of pipes",
-            1,
-            5,
+            min_value=1,
             value=len(current_pipes),
+            step=1,
             key="room4_pipe_count_v2",
             on_change=_redistribute_room4_pipes,
             help=ROOM4_CONTROL_HELP["pipe_count"],
@@ -1978,63 +2619,90 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
         _sync_room4_pipe_widget_state(current_pipes)
 
         updated_pipes = []
+        pipe_configuration_valid = True
         for idx, pipe in enumerate(current_pipes):
             with st.sidebar.expander(f"Pipe {idx + 1} configuration", expanded=False):
                 px = st.number_input(
                     f"Pipe {idx + 1} X position (m)",
-                    0.5,
-                    9.0,
+                    min_value=0.0,
+                    max_value=10.0,
                     step=0.1,
                     key=f"p_{idx}_x",
                     help=ROOM4_CONTROL_HELP["pipe_x"],
                 )
                 pw = st.number_input(
                     f"Pipe {idx + 1} width (m)",
-                    0.2,
-                    2.0,
+                    min_value=0.1,
+                    max_value=10.0,
                     step=0.1,
                     key=f"p_{idx}_w",
                     help=ROOM4_CONTROL_HELP["pipe_width"],
                 )
                 g_start = st.number_input(
                     f"Pipe {idx + 1} gap start Y (m)",
-                    0.5,
-                    8.0,
+                    min_value=0.0,
+                    max_value=10.0,
                     step=0.1,
                     key=f"p_{idx}_gs",
                     help=ROOM4_CONTROL_HELP["gap_start"],
                 )
                 g_size = st.number_input(
                     f"Pipe {idx + 1} gap size (m)",
-                    1.0,
-                    6.0,
+                    min_value=0.1,
+                    max_value=10.0,
                     step=0.1,
                     key=f"p_{idx}_gz",
                     help=ROOM4_CONTROL_HELP["gap_size"],
                 )
-                updated_pipes.append(PipeObstacle(x=px, width=pw, gap_start=g_start, gap_size=g_size))
+                candidate_pipe = PipeObstacle(x=px, width=pw, gap_start=g_start, gap_size=g_size)
+                if candidate_pipe.x_min < 0.0 or candidate_pipe.x_max > 10.0:
+                    st.error("The complete pipe width must remain inside the 10 m room.")
+                    pipe_configuration_valid = False
+                if candidate_pipe.gap_end > 10.0:
+                    st.error("Gap start + gap size must not exceed the 10 m room height.")
+                    pipe_configuration_valid = False
+                updated_pipes.append(candidate_pipe)
 
-        if updated_pipes != st.session_state.room4_pipes:
+        if pipe_configuration_valid and updated_pipes != st.session_state.room4_pipes:
             st.session_state.room4_pipes = updated_pipes
             st.session_state.room4_result = None
 
         st.sidebar.subheader("Reward structure")
         rewards = dict(st.session_state.room4_reward_values)
-        r_step = st.sidebar.slider("Step penalty", -1.0, 0.0, float(rewards.get("step", -0.05)), 0.01, key="r4_r_step", help=ROOM4_CONTROL_HELP["step_reward"])
-        r_prog = st.sidebar.slider("Progress reward", 0.0, 2.0, float(rewards.get("progress", 0.5)), 0.1, key="r4_r_prog", help=ROOM4_CONTROL_HELP["progress_reward"])
-        r_back = st.sidebar.slider("Backward movement reward", -10.0, 0.0, float(rewards.get("backward", 0.0)), 0.1, key="r4_r_back", help=ROOM4_CONTROL_HELP["backward_reward"])
-        r_pipe = st.sidebar.slider("Pipe passed reward", 0.0, 20.0, float(rewards.get("pipe_passed", 5.0)), 0.5, key="r4_r_pipe", help=ROOM4_CONTROL_HELP["pipe_reward"])
-        r_goal = st.sidebar.slider("Goal reward", 5.0, 50.0, float(rewards.get("goal_reached", 20.0)), 1.0, key="r4_r_goal", help=ROOM4_CONTROL_HELP["goal_reward"])
-        r_coll = st.sidebar.slider("Collision penalty", -50.0, -1.0, float(rewards.get("collision", -20.0)), 1.0, key="r4_r_coll", help=ROOM4_CONTROL_HELP["collision_reward"])
+        previous_enabled = set(st.session_state.room4_reward_enabled)
+        reward_specs = (
+            ("step", "Step reward", -0.05, 0.01, "r4_r_step", ROOM4_CONTROL_HELP["step_reward"]),
+            ("progress", "Progress reward", 0.5, 0.1, "r4_r_prog", ROOM4_CONTROL_HELP["progress_reward"]),
+            ("backward", "Backward movement reward", 0.0, 0.1, "r4_r_back", ROOM4_CONTROL_HELP["backward_reward"]),
+            ("hover", "Hover reward", -0.1, 0.1, "r4_r_hover", ROOM4_CONTROL_HELP["hover_reward"]),
+            ("non_right", "Non-right action reward", -0.1, 0.1, "r4_r_non_right", ROOM4_CONTROL_HELP["non_right_reward"]),
+            ("pipe_passed", "Pipe passed reward", 5.0, 0.5, "r4_r_pipe", ROOM4_CONTROL_HELP["pipe_reward"]),
+            ("goal_reached", "Goal reward", 20.0, 1.0, "r4_r_goal", ROOM4_CONTROL_HELP["goal_reward"]),
+            ("collision", "Collision reward", -20.0, 1.0, "r4_r_coll", ROOM4_CONTROL_HELP["collision_reward"]),
+        )
+        next_rewards: dict[str, float] = {}
+        reward_widget_values: dict[str, float] = {}
+        for event, label, default, step, widget_key, help_text in reward_specs:
+            actual_value, configured_value = render_reward_control(
+                enabled_state_key="room4_reward_enabled",
+                event=event,
+                label=label,
+                value=float(rewards.get(event, default)),
+                widget_key=widget_key,
+                step=step,
+                number_format="%.2f",
+                help_text=help_text,
+            )
+            next_rewards[event] = actual_value
+            reward_widget_values[widget_key] = configured_value
+        style_reward_controls(reward_widget_values)
 
-        st.session_state.room4_reward_values = {
-            "step": float(r_step),
-            "progress": float(r_prog),
-            "backward": float(r_back),
-            "pipe_passed": float(r_pipe),
-            "goal_reached": float(r_goal),
-            "collision": float(r_coll),
-        }
+        if next_rewards != rewards or st.session_state.room4_reward_enabled != previous_enabled:
+            st.session_state.room4_reward_values = next_rewards
+            st.session_state.room4_result = None
+            st.session_state.room4_result_environment = None
+            st.session_state.room4_algorithm_config = None
+            st.session_state.room4_test_results = None
 
     elif section == "Training":
         controls = st.session_state.room4_training_controls
@@ -2127,19 +2795,23 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
                 st.session_state.room4_pipe_count_v2 = len(env_l.config.pipes)
                 _sync_room4_pipe_widget_state(list(env_l.config.pipes), overwrite=True)
                 st.session_state.room4_reward_values = dict(env_l.config.rewards)
+                st.session_state.room4_reward_enabled = {
+                    event for event, value in env_l.config.rewards.items() if float(value) != 0.0
+                }
                 st.sidebar.success("Room 4 PPO model loaded successfully!")
                 st.rerun()
 
     return section, requests, run_test
 
 
-def render_room4() -> None:
-    section, requests, run_test = render_room4_controls()
-
-    st.markdown('<div class="room-header"><h2>🐤 Room 4: Continuous Flappy Bird (PPO Algorithm)</h2></div>', unsafe_allow_html=True)
-
+def _render_room4_section(
+    section: str,
+    requests: dict[str, bool],
+    run_test: bool,
+) -> None:
     if section == "Environment":
         env = build_room4_environment()
+        render_algorithm_overview(4)
         st.subheader("10m × 10m continuous Flappy Bird room layout")
         st.markdown(render_room4_html(env), unsafe_allow_html=True)
 
@@ -2165,6 +2837,10 @@ def render_room4() -> None:
             st.session_state.room4_test_results = None
             st.success("Trained Room 4 model reset.")
             st.rerun()
+
+        training_notice = st.session_state.pop("room4_training_notice", None)
+        if training_notice:
+            st.success(training_notice)
 
         if requests["train"]:
             env = build_room4_environment()
@@ -2212,10 +2888,10 @@ def render_room4() -> None:
                         f"Reward: {metric.total_reward:.2f} • Policy Loss: {metric.policy_loss:.4f} • Value Loss: {metric.value_loss:.4f}"
                     )
                     df_live = pd.DataFrame(live_rows)
-                    slot_reward.line_chart(df_live.set_index("episode")[["total_reward"]], x_label="Episode", y_label="Total reward")
-                    slot_ploss.line_chart(df_live.set_index("episode")[["policy_loss"]], x_label="Episode", y_label="Policy loss")
-                    slot_vloss.line_chart(df_live.set_index("episode")[["value_loss"]], x_label="Episode", y_label="Value loss")
-                    slot_entropy.line_chart(df_live.set_index("episode")[["entropy"]], x_label="Episode", y_label="Entropy")
+                    render_locked_line_chart(df_live, x="episode", y="total_reward", x_label="Episode", y_label="Total reward", target=slot_reward)
+                    render_locked_line_chart(df_live, x="episode", y="policy_loss", x_label="Episode", y_label="Policy loss", target=slot_ploss)
+                    render_locked_line_chart(df_live, x="episode", y="value_loss", x_label="Episode", y_label="Value loss", target=slot_vloss)
+                    render_locked_line_chart(df_live, x="episode", y="entropy", x_label="Episode", y_label="Entropy", target=slot_entropy)
 
             with st.spinner("Training PPO agent..."):
                 result = run_ppo(env, config, callback=live_callback)
@@ -2225,20 +2901,14 @@ def render_room4() -> None:
             st.session_state.room4_algorithm_config = config
             st.session_state.room4_test_results = None
             duration_label = _format_training_duration(result.training_duration_seconds)
-            status_placeholder.success(f"PPO training complete in {duration_label}.")
-
-            summary_cols = st.columns(3)
-            summary_cols[0].metric("Training duration", duration_label)
-            summary_cols[1].metric("Episodes completed", result.episodes_run)
-            summary_cols[2].metric("Actions selected", sum(result.action_counts.values()))
-            st.subheader("Training action distribution")
-            st.bar_chart(
-                _room4_action_dataframe(result.action_counts),
-                x="Action",
-                y="Selections",
-                x_label="Action",
-                y_label="Number of selections",
-            )
+            st.session_state.room4_training_notice = f"PPO training complete in {duration_label}."
+            for replay_key in (
+                "room4_tr_replay_select",
+                "room4_tr_replay_step",
+                "room4_tr_replay_is_playing",
+            ):
+                st.session_state.pop(replay_key, None)
+            st.rerun()
 
         res = st.session_state.room4_result
         if res and not requests["train"]:
@@ -2259,20 +2929,20 @@ def render_room4() -> None:
             c1, c2 = st.columns(2)
             with c1:
                 st.caption("**Total reward per episode**")
-                st.line_chart(df.set_index("episode")[["total_reward"]], x_label="Episode", y_label="Total reward")
+                render_locked_line_chart(df, x="episode", y="total_reward", x_label="Episode", y_label="Total reward")
                 st.caption("**Entropy**")
                 if "entropy" in df.columns:
-                    st.line_chart(df.set_index("episode")[["entropy"]], x_label="Episode", y_label="Entropy")
+                    render_locked_line_chart(df, x="episode", y="entropy", x_label="Episode", y_label="Entropy")
             with c2:
                 st.caption("**Policy loss**")
                 if "policy_loss" in df.columns:
-                    st.line_chart(df.set_index("episode")[["policy_loss"]], x_label="Episode", y_label="Policy loss")
+                    render_locked_line_chart(df, x="episode", y="policy_loss", x_label="Episode", y_label="Policy loss")
                 st.caption("**Value loss**")
                 if "value_loss" in df.columns:
-                    st.line_chart(df.set_index("episode")[["value_loss"]], x_label="Episode", y_label="Value loss")
+                    render_locked_line_chart(df, x="episode", y="value_loss", x_label="Episode", y_label="Value loss")
 
             st.subheader("Training action distribution")
-            st.bar_chart(
+            render_locked_bar_chart(
                 _room4_action_dataframe(getattr(res, "action_counts", {})),
                 x="Action",
                 y="Selections",
@@ -2331,7 +3001,7 @@ def render_room4() -> None:
                 for step in episode.trajectory:
                     test_action_counts[step.action.name] += 1
             st.subheader("Test action distribution")
-            st.bar_chart(
+            render_locked_bar_chart(
                 _room4_action_dataframe(test_action_counts),
                 x="Action",
                 y="Selections",
@@ -2375,24 +3045,64 @@ def render_room4() -> None:
             st.info("No trained model currently in memory.")
 
 
+def render_room4() -> None:
+    _section, requests, run_test = render_room4_controls()
+    render_room_page_header(
+        4,
+        "Continuous Flappy Bird workspace",
+        "PPO",
+        "Design continuous pipe obstacles, train the actor-critic policy, inspect its action distribution, and replay complete flights from one page.",
+    )
+    with room_page_section(
+        4,
+        "environment",
+        "Environment and observation space",
+        "Review the continuous 10×10 room, the discrete velocity actions, and every configured pipe.",
+    ):
+        _render_room4_section("Environment", {"train": False, "reset": False}, False)
+    with room_page_section(
+        4,
+        "training",
+        "PPO training dashboard",
+        "Training KPIs, locked charts, action distribution, and episode replay remain visible after training.",
+    ):
+        _render_room4_section("Training", requests, False)
+    with room_page_section(
+        4,
+        "testing",
+        "Policy testing and replay",
+        "Run deterministic evaluation from the sidebar and inspect every recorded flight here.",
+    ):
+        _render_room4_section("Testing", {"train": False, "reset": False}, run_test)
+    with room_page_section(
+        4,
+        "models",
+        "Model and network information",
+        "Inspect the active PPO network; download and upload actions stay in the sidebar.",
+    ):
+        _render_room4_section("Models", {"train": False, "reset": False}, False)
+
+
 # =====================================================================
 # ROOM 5 (PPO - ONE-WAY ROAD) IMPLEMENTATION
 # =====================================================================
 
 ROOM5_HELP = {
-    "section": "Choose whether to configure the road, train PPO, evaluate a trained policy, or manage saved Room 5 models.",
+    "section": "Choose which Room 5 control group appears in the sidebar. The complete road, training, testing, and model dashboard remains visible on the page.",
     "lanes": "Number of one-way traffic lanes. The agent can move left, keep its lane, or move right. More lanes provide more escape routes but enlarge the decision space.",
-    "vision": "Maximum distance ahead, in meters, included in the agent's observation. A longer range gives earlier warning but compresses nearby distance differences.",
+    "vision": "Maximum edge-to-edge clearance ahead, in meters, observed in the agent's current lane only. Distance is measured from the agent's front edge to the rear edge of the nearest traffic car. Cars in adjacent lanes are hidden until the agent changes into that lane.",
     "road_length": "Forward distance required to complete an episode successfully. Longer roads require the policy to avoid traffic for more timesteps.",
-    "traffic_count": "Number of slower same-direction cars circulating ahead. More cars increase traffic density and the frequency of avoidance decisions.",
+    "traffic_count": "Target number of slower same-direction cars. Every episode starts empty, then cars arrive progressively until this traffic level is reached.",
     "ego_speed": "Constant speed of the agent car. It must remain faster than traffic so that other cars approach in the agent-relative view and can be overtaken.",
     "traffic_min": "Minimum speed assigned to a traffic car. Slower cars approach the agent more quickly and are harder to avoid.",
     "traffic_max": "Maximum traffic-car speed. It stays below the agent speed to preserve same-direction overtaking behavior.",
-    "env_seed": "Controls the initial traffic lanes, distances, and speeds so the same road setup can be reproduced.",
+    "env_seed": "Controls arriving traffic lanes, distances, and speeds so the same traffic sequence can be reproduced.",
     "step": "Reward on every timestep. A small negative value discourages unnecessarily long episodes.",
     "progress": "Reward multiplier per meter of forward travel. It provides dense feedback even before a car is overtaken.",
     "overtake": "Reward granted each time the agent safely passes a traffic car.",
     "lane_change": "Reward applied to a valid lane change. A small penalty reduces needless weaving while still allowing evasive maneuvers.",
+    "safer_change": "Reward for a valid lane change that increases the observable distance to the nearest car ahead. An empty destination lane counts as clearance up to the vision limit.",
+    "riskier_change": "Penalty for a valid lane change that decreases the observable distance to the nearest car ahead. This discourages moving into tighter traffic.",
     "invalid_change": "Penalty for requesting a lane beyond the left or right road boundary.",
     "collision": "Terminal penalty for occupying the same lane and longitudinal space as another car.",
     "goal": "Terminal reward for reaching the configured road length without a collision.",
@@ -2452,11 +3162,10 @@ def _room5_action_dataframe(action_counts: dict[str, int]) -> pd.DataFrame:
 
 def render_room5_controls() -> tuple[str, dict[str, bool], bool]:
     st.sidebar.title("Room 5 Controls (PPO)")
-    section = st.sidebar.radio(
-        "Control section",
-        ["Environment", "Training", "Testing", "Models"],
-        key="room5_control_section",
-        help=ROOM5_HELP["section"],
+    section = render_control_section_buttons(
+        5,
+        "room5_control_section",
+        ROOM5_HELP["section"],
     )
     requests = {"train": False, "reset": False}
     run_test = False
@@ -2464,16 +3173,16 @@ def render_room5_controls() -> tuple[str, dict[str, bool], bool]:
     if section == "Environment":
         controls = dict(st.session_state.room5_environment_controls)
         st.sidebar.subheader("One-way road")
-        lane_count = st.sidebar.slider("Number of lanes", 2, 6, int(controls["lane_count"]), key="r5_lanes", help=ROOM5_HELP["lanes"])
-        vision = st.sidebar.slider("Forward vision distance (m)", 40.0, 200.0, float(controls["vision_distance"]), 5.0, key="r5_vision", help=ROOM5_HELP["vision"])
-        road_length = st.sidebar.slider("Road completion distance (m)", 200.0, 2000.0, float(controls["road_length"]), 50.0, key="r5_road_length", help=ROOM5_HELP["road_length"])
-        traffic_count = st.sidebar.slider("Traffic car count", 4, 30, int(controls["traffic_count"]), key="r5_traffic_count", help=ROOM5_HELP["traffic_count"])
-        ego_speed = st.sidebar.slider("Agent speed (m/s)", 25.0, 40.0, float(controls["ego_speed"]), 1.0, key="r5_ego_speed", help=ROOM5_HELP["ego_speed"])
-        traffic_min = st.sidebar.slider("Minimum traffic speed (m/s)", 5.0, 20.0, float(controls["traffic_speed_min"]), 1.0, key="r5_traffic_min", help=ROOM5_HELP["traffic_min"])
-        traffic_max = st.sidebar.slider("Maximum traffic speed (m/s)", 21.0, 24.0, float(controls["traffic_speed_max"]), 1.0, key="r5_traffic_max", help=ROOM5_HELP["traffic_max"])
-        env_seed = st.sidebar.number_input("Environment seed", 0, value=int(controls["seed"]), key="r5_env_seed", help=ROOM5_HELP["env_seed"])
+        lane_count = st.sidebar.number_input("Number of lanes", min_value=2, max_value=6, value=int(controls["lane_count"]), step=1, key="r5_lanes_input", help=ROOM5_HELP["lanes"])
+        vision = st.sidebar.number_input("Forward vision distance (m)", min_value=0.1, value=float(controls["vision_distance"]), step=5.0, format="%.1f", key="r5_vision_input", help=ROOM5_HELP["vision"])
+        road_length = st.sidebar.number_input("Road completion distance (m)", min_value=0.1, value=float(controls["road_length"]), step=50.0, format="%.1f", key="r5_road_length_input", help=ROOM5_HELP["road_length"])
+        traffic_count = st.sidebar.number_input("Traffic car count", min_value=0, value=int(controls["traffic_count"]), step=1, key="r5_traffic_count_input", help=ROOM5_HELP["traffic_count"])
+        ego_speed = st.sidebar.number_input("Agent speed (m/s)", min_value=0.1, value=float(controls["ego_speed"]), step=1.0, format="%.1f", key="r5_ego_speed_input", help=ROOM5_HELP["ego_speed"])
+        traffic_min = st.sidebar.number_input("Minimum traffic speed (m/s)", min_value=0.0, value=float(controls["traffic_speed_min"]), step=1.0, format="%.1f", key="r5_traffic_min_input", help=ROOM5_HELP["traffic_min"])
+        traffic_max = st.sidebar.number_input("Maximum traffic speed (m/s)", min_value=0.0, value=float(controls["traffic_speed_max"]), step=1.0, format="%.1f", key="r5_traffic_max_input", help=ROOM5_HELP["traffic_max"])
+        env_seed = st.sidebar.number_input("Environment seed", min_value=0, value=int(controls["seed"]), key="r5_env_seed", help=ROOM5_HELP["env_seed"])
 
-        next_controls = {
+        requested_controls = {
             "lane_count": int(lane_count),
             "vision_distance": float(vision),
             "road_length": float(road_length),
@@ -2483,27 +3192,60 @@ def render_room5_controls() -> tuple[str, dict[str, bool], bool]:
             "traffic_count": int(traffic_count),
             "seed": int(env_seed),
         }
+        environment_errors: list[str] = []
+        if float(traffic_min) > float(traffic_max):
+            environment_errors.append("Minimum traffic speed cannot exceed maximum traffic speed.")
+        if float(traffic_max) >= float(ego_speed):
+            environment_errors.append("Maximum traffic speed must remain below the agent speed.")
+        for message in environment_errors:
+            st.sidebar.error(message)
 
         st.sidebar.subheader("Reward structure")
         rewards = dict(st.session_state.room5_reward_values)
-        next_rewards = {
-            "step": float(st.sidebar.slider("Step reward", -1.0, 0.0, float(rewards["step"]), 0.01, key="r5_step_reward", help=ROOM5_HELP["step"])),
-            "forward_progress": float(st.sidebar.slider("Forward progress reward per meter", 0.0, 1.0, float(rewards["forward_progress"]), 0.01, key="r5_progress_reward", help=ROOM5_HELP["progress"])),
-            "overtake": float(st.sidebar.slider("Overtake reward", 0.0, 30.0, float(rewards["overtake"]), 0.5, key="r5_overtake_reward", help=ROOM5_HELP["overtake"])),
-            "lane_change": float(st.sidebar.slider("Lane-change reward", -2.0, 0.0, float(rewards["lane_change"]), 0.05, key="r5_lane_change_reward", help=ROOM5_HELP["lane_change"])),
-            "invalid_lane_change": float(st.sidebar.slider("Invalid lane-change penalty", -10.0, 0.0, float(rewards["invalid_lane_change"]), 0.5, key="r5_invalid_change_reward", help=ROOM5_HELP["invalid_change"])),
-            "collision": float(st.sidebar.slider("Collision penalty", -100.0, -1.0, float(rewards["collision"]), 1.0, key="r5_collision_reward", help=ROOM5_HELP["collision"])),
-            "goal_reached": float(st.sidebar.slider("Road completion reward", 5.0, 100.0, float(rewards["goal_reached"]), 1.0, key="r5_goal_reward", help=ROOM5_HELP["goal"])),
-        }
-        if next_controls != controls or next_rewards != rewards:
-            st.session_state.room5_environment_controls = next_controls
+        previous_reward_enabled = set(st.session_state.room5_reward_enabled)
+        reward_specs = (
+            ("step", "Step reward", 0.01, "%.2f", "r5_step_reward_input", ROOM5_HELP["step"]),
+            ("forward_progress", "Forward progress reward per meter", 0.01, "%.2f", "r5_progress_reward_input", ROOM5_HELP["progress"]),
+            ("overtake", "Overtake reward", 0.5, "%.1f", "r5_overtake_reward_input", ROOM5_HELP["overtake"]),
+            ("lane_change", "Lane-change reward", 0.05, "%.2f", "r5_lane_change_reward_input", ROOM5_HELP["lane_change"]),
+            ("safer_lane_change", "Safer lane-change reward", 0.1, "%.1f", "r5_safer_change_reward_input", ROOM5_HELP["safer_change"]),
+            ("riskier_lane_change", "Riskier lane-change reward", 0.1, "%.1f", "r5_riskier_change_reward_input", ROOM5_HELP["riskier_change"]),
+            ("invalid_lane_change", "Invalid lane-change reward", 0.5, "%.1f", "r5_invalid_change_reward_input", ROOM5_HELP["invalid_change"]),
+            ("collision", "Collision reward", 1.0, "%.1f", "r5_collision_reward_input", ROOM5_HELP["collision"]),
+            ("goal_reached", "Road completion reward", 1.0, "%.1f", "r5_goal_reward_input", ROOM5_HELP["goal"]),
+        )
+        next_rewards: dict[str, float] = {}
+        reward_widget_values: dict[str, float] = {}
+        for event, label, step, number_format, widget_key, help_text in reward_specs:
+            actual_value, configured_value = render_reward_control(
+                enabled_state_key="room5_reward_enabled",
+                event=event,
+                label=label,
+                value=float(rewards[event]),
+                widget_key=widget_key,
+                step=step,
+                number_format=number_format,
+                help_text=help_text,
+            )
+            next_rewards[event] = actual_value
+            reward_widget_values[widget_key] = configured_value
+        style_reward_controls(reward_widget_values)
+        environment_changed = not environment_errors and requested_controls != controls
+        rewards_changed = (
+            next_rewards != rewards
+            or st.session_state.room5_reward_enabled != previous_reward_enabled
+        )
+        if environment_changed:
+            st.session_state.room5_environment_controls = requested_controls
+        if rewards_changed:
             st.session_state.room5_reward_values = next_rewards
+        if environment_changed or rewards_changed:
             _invalidate_room5_model()
 
     elif section == "Training":
         controls = st.session_state.room5_training_controls
         st.sidebar.subheader("PPO hyperparameters")
-        alpha = st.sidebar.number_input("Learning rate", 0.00001, 0.01, float(controls["alpha"]), format="%.5f", key="r5_alpha", help=ROOM5_HELP["alpha"])
+        alpha = st.sidebar.number_input("Learning rate", 0.00001, 0.01, float(controls["alpha"]), step=0.00001, format="%.5f", key="r5_alpha", help=ROOM5_HELP["alpha"])
         gamma = st.sidebar.number_input("Discount factor", 0.0, 1.0, float(controls["gamma"]), format="%.3f", key="r5_gamma", help=ROOM5_HELP["gamma"])
         gae_lambda = st.sidebar.number_input("GAE lambda", 0.0, 1.0, float(controls["gae_lambda"]), format="%.3f", key="r5_gae", help=ROOM5_HELP["gae"])
         clip_epsilon = st.sidebar.number_input("PPO clip epsilon", 0.01, 0.5, float(controls["clip_epsilon"]), format="%.3f", key="r5_clip", help=ROOM5_HELP["clip"])
@@ -2568,6 +3310,9 @@ def render_room5_controls() -> tuple[str, dict[str, bool], bool]:
                     "traffic_count": config.traffic_count, "seed": config.seed,
                 }
                 st.session_state.room5_reward_values = dict(config.rewards)
+                st.session_state.room5_reward_enabled = {
+                    event for event, value in config.rewards.items() if float(value) != 0.0
+                }
                 st.sidebar.success("Room 5 PPO model loaded successfully.")
                 st.rerun()
 
@@ -2586,17 +3331,23 @@ def _render_room5_training_summary(result: Any) -> None:
     chart_columns = st.columns(2)
     with chart_columns[0]:
         st.caption("**Total reward per episode**")
-        st.line_chart(metrics, x="episode", y="total_reward", x_label="Episode", y_label="Total reward")
+        render_locked_line_chart(metrics, x="episode", y="total_reward", x_label="Episode", y_label="Total reward")
         st.caption("**Overtakes per episode**")
-        st.line_chart(metrics, x="episode", y="overtakes", x_label="Episode", y_label="Overtakes")
-    with chart_columns[1]:
-        st.caption("**PPO policy and value loss**")
-        st.line_chart(metrics, x="episode", y=["policy_loss", "value_loss"], x_label="Episode", y_label="Loss")
+        render_locked_line_chart(metrics, x="episode", y="overtakes", x_label="Episode", y_label="Overtakes")
         st.caption("**Policy entropy**")
-        st.line_chart(metrics, x="episode", y="entropy", x_label="Episode", y_label="Entropy")
+        render_locked_line_chart(metrics, x="episode", y="entropy", x_label="Episode", y_label="Entropy")
+    with chart_columns[1]:
+        st.caption("**PPO policy loss (signed surrogate objective)**")
+        st.caption(
+            "This value is expected to stay near zero because PPO normalizes advantages; "
+            "a near-zero scalar does not mean that the policy gradient is zero."
+        )
+        render_locked_line_chart(metrics, x="episode", y="policy_loss", x_label="Episode", y_label="Signed policy loss")
+        st.caption("**Value loss**")
+        render_locked_line_chart(metrics, x="episode", y="value_loss", x_label="Episode", y_label="Value loss")
 
     st.subheader("Training action distribution")
-    st.bar_chart(_room5_action_dataframe(result.action_counts), x="Action", y="Selections", x_label="Action", y_label="Number of selections")
+    render_locked_bar_chart(_room5_action_dataframe(result.action_counts), x="Action", y="Selections", x_label="Action", y_label="Number of selections")
 
     if hasattr(result, "training_episodes") and result.training_episodes:
         environment = st.session_state.room5_result_environment or build_room5_environment()
@@ -2610,23 +3361,26 @@ def _render_room5_training_summary(result: Any) -> None:
 
 
 
-def render_room5() -> None:
-    section, requests, run_test = render_room5_controls()
-    st.markdown('<div class="room-header"><h2>🚘 Room 5: One-way traffic avoidance (PPO)</h2></div>', unsafe_allow_html=True)
-
+def _render_room5_section(
+    section: str,
+    requests: dict[str, bool],
+    run_test: bool,
+) -> None:
     if section == "Environment":
         environment = build_room5_environment()
+        render_algorithm_overview(5)
         st.subheader("Configurable one-way road")
         st.markdown(render_room5_html(environment), unsafe_allow_html=True)
         controls = environment.config
         with st.container(horizontal=True):
             st.metric("Lanes", controls.lane_count, border=True)
             st.metric("Vision", f"{controls.vision_distance:.0f}m", border=True)
-            st.metric("Traffic cars", controls.traffic_count, border=True)
+            st.metric("Target traffic cars", controls.traffic_count, border=True)
             st.metric("Goal distance", f"{controls.road_length:.0f}m", border=True)
         st.caption(
-            "All traffic travels in the same direction. Because the agent is faster, "
-            "slower vehicles move toward it in the agent-relative view and must be avoided or overtaken."
+            "Each episode starts with an empty road, then slower same-direction cars arrive "
+            "progressively from beyond the vision line. Because the agent is faster, they move "
+            "toward it in the agent-relative view and must be avoided or overtaken."
         )
 
     elif section == "Training":
@@ -2634,6 +3388,10 @@ def render_room5() -> None:
             _invalidate_room5_model()
             st.success("Room 5 trained model reset.")
             st.rerun()
+
+        training_notice = st.session_state.pop("room5_training_notice", None)
+        if training_notice:
+            st.success(training_notice)
 
         if requests["train"]:
             environment = build_room5_environment()
@@ -2656,11 +3414,13 @@ def render_room5() -> None:
                 reward_slot = st.empty()
                 st.caption("**Overtakes per episode**")
                 overtake_slot = st.empty()
-            with chart_columns[1]:
-                st.caption("**Policy and value loss**")
-                loss_slot = st.empty()
                 st.caption("**Policy entropy**")
                 entropy_slot = st.empty()
+            with chart_columns[1]:
+                st.caption("**PPO policy loss (signed; normally close to zero)**")
+                policy_loss_slot = st.empty()
+                st.caption("**Value loss**")
+                value_loss_slot = st.empty()
             live_rows: list[dict[str, Any]] = []
 
             def room5_live_callback(metric: Any, policy_net: Any) -> None:
@@ -2669,13 +3429,14 @@ def render_room5() -> None:
                     status.info(
                         f"Training episode {metric.episode}/{config.episodes} • "
                         f"Reward: {metric.total_reward:.2f} • Overtakes: {metric.overtakes} • "
-                        f"Entropy: {metric.entropy:.3f}"
+                        f"Policy loss: {metric.policy_loss:.3e} • Entropy: {metric.entropy:.3f}"
                     )
                     frame = pd.DataFrame(live_rows)
-                    reward_slot.line_chart(frame, x="episode", y="total_reward", x_label="Episode", y_label="Total reward")
-                    overtake_slot.line_chart(frame, x="episode", y="overtakes", x_label="Episode", y_label="Overtakes")
-                    loss_slot.line_chart(frame, x="episode", y=["policy_loss", "value_loss"], x_label="Episode", y_label="Loss")
-                    entropy_slot.line_chart(frame, x="episode", y="entropy", x_label="Episode", y_label="Entropy")
+                    render_locked_line_chart(frame, x="episode", y="total_reward", x_label="Episode", y_label="Total reward", target=reward_slot)
+                    render_locked_line_chart(frame, x="episode", y="overtakes", x_label="Episode", y_label="Overtakes", target=overtake_slot)
+                    render_locked_line_chart(frame, x="episode", y="entropy", x_label="Episode", y_label="Entropy", target=entropy_slot)
+                    render_locked_line_chart(frame, x="episode", y="policy_loss", x_label="Episode", y_label="Signed policy loss", target=policy_loss_slot)
+                    render_locked_line_chart(frame, x="episode", y="value_loss", x_label="Episode", y_label="Value loss", target=value_loss_slot)
 
             with st.spinner("Training PPO agent..."):
                 result = run_ppo(environment, config, callback=room5_live_callback)
@@ -2683,9 +3444,15 @@ def render_room5() -> None:
             st.session_state.room5_result_environment = environment
             st.session_state.room5_algorithm_config = config
             st.session_state.room5_test_results = None
-            status.success(f"PPO training complete in {_format_training_duration(result.training_duration_seconds)}.")
-            st.subheader("Training action distribution")
-            st.bar_chart(_room5_action_dataframe(result.action_counts), x="Action", y="Selections", x_label="Action", y_label="Number of selections")
+            duration = _format_training_duration(result.training_duration_seconds)
+            st.session_state.room5_training_notice = f"PPO training complete in {duration}."
+            for replay_key in (
+                "room5_tr_replay_select",
+                "room5_tr_replay_step",
+                "room5_tr_replay_is_playing",
+            ):
+                st.session_state.pop(replay_key, None)
+            st.rerun()
 
         result = st.session_state.room5_result
         if result is not None and not requests["train"]:
@@ -2721,14 +3488,14 @@ def render_room5() -> None:
             charts = st.columns(2)
             with charts[0]:
                 st.caption("**Test reward by episode**")
-                st.line_chart(table, x="Episode", y="Total reward", x_label="Episode", y_label="Total reward")
+                render_locked_line_chart(table, x="Episode", y="Total reward", x_label="Episode", y_label="Total reward")
             action_counts = {action.name: 0 for action in Action5}
             for episode in results:
                 for step in episode.trajectory:
                     action_counts[step.action.name] += 1
             with charts[1]:
                 st.caption("**Test action distribution**")
-                st.bar_chart(_room5_action_dataframe(action_counts), x="Action", y="Selections", x_label="Action", y_label="Number of selections")
+                render_locked_bar_chart(_room5_action_dataframe(action_counts), x="Action", y="Selections", x_label="Action", y_label="Number of selections")
             st.dataframe(table, width="stretch")
 
             render_episode_replay_visualizer(
@@ -2749,7 +3516,8 @@ def render_room5() -> None:
         if result and config:
             st.json({
                 "Algorithm": "PPO (Proximal Policy Optimization)",
-                "Observation dimension": 19,
+                "Observation dimension": OBSERVATION_SIZE,
+                "Observation schema": "Own lane only: lane identity, front-to-rear edge clearance, closing speed, progress",
                 "Actions": [action.name for action in Action5],
                 "Hidden architecture": list(config.hidden_dims),
                 "Activation function": config.activation_fn,
@@ -2764,6 +3532,44 @@ def render_room5() -> None:
             })
         else:
             st.info("No trained Room 5 model is currently in memory.")
+
+
+def render_room5() -> None:
+    _section, requests, run_test = render_room5_controls()
+    render_room_page_header(
+        5,
+        "One-way traffic avoidance workspace",
+        "PPO",
+        "Configure the road and current-lane sensor, train a driving policy, measure safety, and replay complete episodes from one continuous dashboard.",
+    )
+    with room_page_section(
+        5,
+        "environment",
+        "Road environment and agent vision",
+        "See the full road while the agent observes only the nearest vehicle in its own forward lane.",
+    ):
+        _render_room5_section("Environment", {"train": False, "reset": False}, False)
+    with room_page_section(
+        5,
+        "training",
+        "PPO training dashboard",
+        "Review duration, rewards, overtakes, losses, entropy, action choices, and training replay together.",
+    ):
+        _render_room5_section("Training", requests, False)
+    with room_page_section(
+        5,
+        "testing",
+        "Safety testing and episode replay",
+        "Run deterministic road tests from the sidebar and compare success, collision, reward, and behavior.",
+    ):
+        _render_room5_section("Testing", {"train": False, "reset": False}, run_test)
+    with room_page_section(
+        5,
+        "models",
+        "Model and network information",
+        "Inspect the active observation schema and PPO network; model file actions stay in the sidebar.",
+    ):
+        _render_room5_section("Models", {"train": False, "reset": False}, False)
 
 
 def render_future_room(room_name: str) -> None:
@@ -2794,4 +3600,6 @@ elif active_room == "Room 5":
     render_room5()
 else:
     render_future_room(active_room)
+
+render_pending_room_section_scroll()
 

@@ -9,7 +9,10 @@ import numpy as np
 
 
 MAX_LANES = 6
-OBSERVATION_SIZE = (MAX_LANES * 3) + 1
+MIN_TRAFFIC_CLEARANCE_METERS = 3.0
+# Six values identify the agent's own lane. The remaining three values describe
+# only that lane: nearest-car distance, closing speed, and road progress.
+OBSERVATION_SIZE = MAX_LANES + 3
 RoadObservation = tuple[float, ...]
 
 
@@ -23,6 +26,8 @@ class Action5(IntEnum):
 class TrafficCar:
     car_id: int
     lane: int
+    # Longitudinal center-to-center offset from the ego car. User-facing
+    # distances are converted to physical edge-to-edge clearance.
     distance: float
     speed: float
 
@@ -39,6 +44,8 @@ DEFAULT_ROOM5_REWARDS: dict[str, float] = {
     "forward_progress": 0.02,
     "overtake": 8.0,
     "lane_change": -0.05,
+    "safer_lane_change": 1.0,
+    "riskier_lane_change": -1.0,
     "invalid_lane_change": -0.5,
     "collision": -40.0,
     "goal_reached": 40.0,
@@ -70,12 +77,12 @@ class Room5Config:
             raise ValueError("road_length and dt must be positive.")
         if self.ego_speed <= 0:
             raise ValueError("ego_speed must be positive.")
-        if not 0 < self.traffic_speed_min <= self.traffic_speed_max:
+        if not 0 <= self.traffic_speed_min <= self.traffic_speed_max:
             raise ValueError("Invalid traffic speed range.")
         if self.traffic_speed_max >= self.ego_speed:
             raise ValueError("Traffic must be slower than the agent car.")
-        if self.traffic_count <= 0:
-            raise ValueError("traffic_count must be positive.")
+        if self.traffic_count < 0:
+            raise ValueError("traffic_count cannot be negative.")
         if self.car_length <= 0:
             raise ValueError("car_length must be positive.")
 
@@ -103,6 +110,8 @@ class Room5Environment:
         self.progress = 0.0
         self.traffic: list[TrafficCar] = []
         self._next_car_id = 0
+        self.elapsed_time = 0.0
+        self._next_spawn_time = 1.0
         self.reset(self.config.seed)
 
     def reset(self, seed: int | None = None) -> RoadObservation:
@@ -111,26 +120,34 @@ class Room5Environment:
         self.ego_lane = self.config.lane_count // 2
         self.progress = 0.0
         self._next_car_id = 0
+        self.elapsed_time = 0.0
+        self._next_spawn_time = 1.0
         self.traffic = []
-
-        base_distances = np.linspace(
-            max(18.0, self.config.car_length * 3.0),
-            self.config.vision_distance * 1.45,
-            self.config.traffic_count,
-        )
-        jitter_limit = min(4.0, self.config.vision_distance * 0.025)
-        for distance in base_distances:
-            self.traffic.append(
-                self._new_car(
-                    distance=float(distance + self._rng.uniform(-jitter_limit, jitter_limit))
-                )
-            )
         return self.observation()
 
-    def _new_car(self, distance: float) -> TrafficCar:
+    def _spawn_interval(self) -> float:
+        """Space arrivals so the road fills progressively instead of at reset."""
+        density_interval = self.config.vision_distance / (
+            self.config.ego_speed * max(1, self.config.traffic_count)
+        )
+        return float(max(0.5, min(2.0, density_interval)))
+
+    def _spawn_arriving_car(self) -> None:
+        lane = int(self._rng.integers(0, self.config.lane_count))
+        minimum_center_spacing = (
+            self.config.car_length + MIN_TRAFFIC_CLEARANCE_METERS
+        )
+        lane_farthest = max(
+            [car.distance for car in self.traffic if car.lane == lane]
+            + [self.config.vision_distance]
+        )
+        distance = max(
+            self.config.vision_distance * 1.05,
+            lane_farthest + minimum_center_spacing,
+        ) + float(self._rng.uniform(0.0, minimum_center_spacing * 0.35))
         car = TrafficCar(
             car_id=self._next_car_id,
-            lane=int(self._rng.integers(0, self.config.lane_count)),
+            lane=lane,
             distance=float(distance),
             speed=float(
                 self._rng.uniform(
@@ -140,7 +157,52 @@ class Room5Environment:
             ),
         )
         self._next_car_id += 1
-        return car
+        self.traffic.append(car)
+
+    def forward_clearance(self, car: TrafficCar) -> float:
+        """Return the gap from the ego front edge to the traffic rear edge."""
+        return float(car.distance - self.config.car_length)
+
+    def _enforce_minimum_traffic_clearance(
+        self,
+        cars: list[TrafficCar],
+    ) -> list[TrafficCar]:
+        """Prevent same-lane traffic cars from getting closer than three meters."""
+        minimum_center_spacing = (
+            self.config.car_length + MIN_TRAFFIC_CLEARANCE_METERS
+        )
+        constrained: list[TrafficCar] = []
+        for lane in range(self.config.lane_count):
+            lane_cars = sorted(
+                (car for car in cars if car.lane == lane),
+                key=lambda car: car.distance,
+                reverse=True,
+            )
+            front_car: TrafficCar | None = None
+            for car in lane_cars:
+                adjusted = car
+                if front_car is not None:
+                    maximum_distance = front_car.distance - minimum_center_spacing
+                    if car.distance > maximum_distance:
+                        adjusted = TrafficCar(
+                            car_id=car.car_id,
+                            lane=car.lane,
+                            distance=float(maximum_distance),
+                            speed=float(min(car.speed, front_car.speed)),
+                        )
+                constrained.append(adjusted)
+                front_car = adjusted
+        return sorted(constrained, key=lambda car: car.car_id)
+
+    def nearest_ahead_distance(self, lane: int) -> float:
+        """Return edge-to-edge clearance ahead, capped at the field of view."""
+        visible_distances = [
+            self.forward_clearance(car)
+            for car in self.traffic
+            if car.lane == lane
+            and 0.0 <= self.forward_clearance(car) <= self.config.vision_distance
+        ]
+        return float(min(visible_distances, default=self.config.vision_distance))
 
     def snapshot(self) -> RoadSnapshot:
         return RoadSnapshot(
@@ -153,33 +215,29 @@ class Room5Environment:
         one_hot_lane = [0.0] * MAX_LANES
         one_hot_lane[self.ego_lane] = 1.0
 
-        distances: list[float] = []
-        closing_speeds: list[float] = []
-        for lane in range(MAX_LANES):
-            if lane >= self.config.lane_count:
-                distances.append(-1.0)
-                closing_speeds.append(-1.0)
-                continue
-
-            visible = [
-                car
-                for car in self.traffic
-                if car.lane == lane
-                and 0.0 <= car.distance <= self.config.vision_distance
-            ]
-            if not visible:
-                distances.append(1.0)
-                closing_speeds.append(0.0)
-                continue
-
-            nearest = min(visible, key=lambda car: car.distance)
-            distances.append(float(nearest.distance / self.config.vision_distance))
-            closing_speeds.append(
-                float((self.config.ego_speed - nearest.speed) / self.config.ego_speed)
+        visible_in_current_lane = [
+            car
+            for car in self.traffic
+            if car.lane == self.ego_lane
+            and 0.0 <= self.forward_clearance(car) <= self.config.vision_distance
+        ]
+        if visible_in_current_lane:
+            nearest = min(visible_in_current_lane, key=self.forward_clearance)
+            nearest_distance = float(
+                self.forward_clearance(nearest) / self.config.vision_distance
             )
+            closing_speed = float(
+                (self.config.ego_speed - nearest.speed) / self.config.ego_speed
+            )
+        else:
+            nearest_distance = 1.0
+            closing_speed = 0.0
 
         progress = min(1.0, self.progress / self.config.road_length)
-        return tuple(one_hot_lane + distances + closing_speeds + [float(progress)])
+        return tuple(
+            one_hot_lane
+            + [nearest_distance, closing_speed, float(progress)]
+        )
 
     def step(self, action: Action5) -> Room5Transition:
         action = Action5(action)
@@ -187,6 +245,7 @@ class Room5Environment:
         reward = float(self.config.rewards.get("step", -0.02))
 
         previous_lane = self.ego_lane
+        previous_clearance = self.nearest_ahead_distance(previous_lane)
         if action == Action5.LEFT:
             if self.ego_lane > 0:
                 self.ego_lane -= 1
@@ -203,23 +262,38 @@ class Room5Environment:
         if self.ego_lane != previous_lane:
             events.append("lane_changed")
             reward += self.config.rewards.get("lane_change", -0.05)
+            new_clearance = self.nearest_ahead_distance(self.ego_lane)
+            if new_clearance > previous_clearance + 1e-9:
+                events.append("safer_lane_change")
+                reward += self.config.rewards.get("safer_lane_change", 1.0)
+            elif new_clearance < previous_clearance - 1e-9:
+                events.append("riskier_lane_change")
+                reward += self.config.rewards.get("riskier_lane_change", -1.0)
 
         forward_distance = self.config.ego_speed * self.config.dt
         self.progress += forward_distance
+        self.elapsed_time += self.config.dt
         reward += forward_distance * self.config.rewards.get("forward_progress", 0.02)
         events.append("forward_progress")
 
+        moved_traffic: list[TrafficCar] = []
+        for car in self.traffic:
+            closing_distance = (self.config.ego_speed - car.speed) * self.config.dt
+            moved_traffic.append(
+                TrafficCar(
+                    car_id=car.car_id,
+                    lane=car.lane,
+                    distance=float(car.distance - closing_distance),
+                    speed=car.speed,
+                )
+            )
+
+        moved_traffic = self._enforce_minimum_traffic_clearance(moved_traffic)
         updated_traffic: list[TrafficCar] = []
         overtaken = 0
         collision = False
-        farthest_distance = max(
-            [car.distance for car in self.traffic]
-            + [self.config.vision_distance]
-        )
-
-        for car in self.traffic:
-            closing_distance = (self.config.ego_speed - car.speed) * self.config.dt
-            next_distance = car.distance - closing_distance
+        for car in moved_traffic:
+            next_distance = car.distance
             if (
                 car.lane == self.ego_lane
                 and abs(next_distance) <= self.config.car_length
@@ -228,13 +302,6 @@ class Room5Environment:
 
             if next_distance < -self.config.car_length:
                 overtaken += 1
-                farthest_distance += float(
-                    self._rng.uniform(
-                        max(12.0, self.config.car_length * 2.5),
-                        max(25.0, self.config.vision_distance * 0.3),
-                    )
-                )
-                updated_traffic.append(self._new_car(farthest_distance))
             else:
                 updated_traffic.append(
                     TrafficCar(
@@ -246,6 +313,12 @@ class Room5Environment:
                 )
 
         self.traffic = updated_traffic
+        while (
+            len(self.traffic) < self.config.traffic_count
+            and self.elapsed_time + 1e-9 >= self._next_spawn_time
+        ):
+            self._spawn_arriving_car()
+            self._next_spawn_time += self._spawn_interval()
         if overtaken:
             events.extend(["overtake"] * overtaken)
             reward += overtaken * self.config.rewards.get("overtake", 8.0)

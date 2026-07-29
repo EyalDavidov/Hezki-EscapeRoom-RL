@@ -313,10 +313,20 @@ def render_room5_html(
             f'<line x1="{x}" y1="0" x2="{x}" y2="{svg_height}" stroke="#f8fafc" stroke-width="3" stroke-dasharray="18,18" opacity="0.8" />'
         )
 
+    ego_x = lane_center(snapshot.ego_lane)
+    view_left = road_left + snapshot.ego_lane * lane_width + 6
+    view_right = view_left + lane_width - 12
+    view_near_y = ego_y - 34
     elements.extend(
         [
-            f'<line x1="{road_left}" y1="{horizon_y}" x2="{road_right}" y2="{horizon_y}" stroke="#38bdf8" stroke-width="3" stroke-dasharray="8,5" />',
-            f'<text x="{road_right + 16}" y="{horizon_y + 5}" fill="#bae6fd" font-size="13" font-weight="700">VISION {environment.config.vision_distance:.0f}m</text>',
+            f'<polygon points="{ego_x - 14:.1f},{view_near_y:.1f} {ego_x + 14:.1f},{view_near_y:.1f} {view_right:.1f},{horizon_y:.1f} {view_left:.1f},{horizon_y:.1f}" fill="#38bdf8" opacity="0.18" stroke="#7dd3fc" stroke-width="2" stroke-dasharray="7,5" />',
+            f'<line x1="{view_left:.1f}" y1="{horizon_y:.1f}" x2="{view_right:.1f}" y2="{horizon_y:.1f}" stroke="#38bdf8" stroke-width="4" />',
+            f'<text x="{ego_x:.1f}" y="{horizon_y - 12:.1f}" text-anchor="middle" fill="#e0f2fe" font-size="12" font-weight="800">CURRENT-LANE VIEW • {environment.config.vision_distance:.0f}m</text>',
+        ]
+    )
+
+    elements.extend(
+        [
             f'<text x="18" y="32" fill="#dcfce7" font-size="16" font-weight="800">ONE-WAY ROAD</text>',
             f'<text x="18" y="55" fill="#bbf7d0" font-size="13">Progress: {snapshot.progress:.1f}/{environment.config.road_length:.0f}m</text>',
             f'<path d="M {svg_width - 46} 74 L {svg_width - 46} 24 M {svg_width - 58} 38 L {svg_width - 46} 24 L {svg_width - 34} 38" fill="none" stroke="#f8fafc" stroke-width="4" />',
@@ -324,16 +334,43 @@ def render_room5_html(
     )
 
     traffic_colors = ("#ef4444", "#f97316", "#a855f7", "#eab308")
-    for car in sorted(snapshot.traffic, key=lambda item: item.distance, reverse=True):
-        if not -environment.config.car_length <= car.distance <= environment.config.vision_distance:
-            continue
+    visible_traffic = [
+        car
+        for car in snapshot.traffic
+        if -environment.config.car_length
+        <= car.distance
+        <= environment.config.vision_distance + environment.config.car_length
+    ]
+    closest_ahead = min(
+        (
+            car
+            for car in visible_traffic
+            if environment.forward_clearance(car) >= 0.0
+            and car.lane == snapshot.ego_lane
+        ),
+        key=environment.forward_clearance,
+        default=None,
+    )
+    for car in sorted(visible_traffic, key=lambda item: item.distance, reverse=True):
+        car_x = lane_center(car.lane)
+        car_y = distance_y(car.distance)
         elements.append(
             car_svg(
-                lane_center(car.lane),
-                distance_y(car.distance),
+                car_x,
+                car_y,
                 traffic_colors[car.car_id % len(traffic_colors)],
             )
         )
+        if closest_ahead is not None and car.car_id == closest_ahead.car_id:
+            label_x = car_x + (42 if car_x + 78 < road_right else -42)
+            label_y = max(horizon_y + 18, car_y - 31)
+            distance_label = f"{environment.forward_clearance(car):.1f} m"
+            elements.extend(
+                [
+                    f'<rect x="{label_x - 30:.1f}" y="{label_y - 15:.1f}" width="60" height="23" rx="7" fill="#0f172a" stroke="#38bdf8" stroke-width="1.5" opacity="0.94" />',
+                    f'<text x="{label_x:.1f}" y="{label_y + 1:.1f}" text-anchor="middle" fill="#e0f2fe" font-size="12" font-weight="800" aria-label="Nearest car distance {distance_label}">{distance_label}</text>',
+                ]
+            )
 
     elements.append(car_svg(lane_center(snapshot.ego_lane), ego_y, "#2563eb", ego=True))
 
