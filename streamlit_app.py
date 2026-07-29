@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -29,6 +30,11 @@ from escape_room_rl.policy_iteration import (  # noqa: E402
     PolicyIterationConfig,
     run_policy_iteration,
 )
+from escape_room_rl.value_iteration import (  # noqa: E402
+    ValueIterationConfig,
+    run_value_iteration,
+)
+
 from escape_room_rl.sarsa import (  # noqa: E402
     SarsaConfig,
     run_sarsa,
@@ -270,6 +276,7 @@ def initialize_state() -> None:
     defaults = {
         "active_room": "Room 1",
         # Room 1
+        "room1_algorithm": "Policy Iteration",
         "room1_walls": set(DEFAULT_WALLS),
         "room1_slippery": {},
         "room1_start": (0, 0),
@@ -285,10 +292,12 @@ def initialize_state() -> None:
         "room1_test_results": None,
         "room1_editor_nonce": 0,
         "room1_training_controls": {
+            "algorithm": "Policy Iteration",
             "gamma": 0.95,
             "theta": 1e-6,
             "max_policy_iterations": 100,
             "max_evaluation_sweeps": 10_000,
+            "max_iterations": 1000,
             "seed": 42,
             "live_update_every": 5,
         },
@@ -809,7 +818,8 @@ def render_grid_editor(room_num: int) -> None:
 
 def render_environment_page(room_num: int) -> None:
     p = room_prefix(room_num)
-    algo_names = {1: "Policy Iteration", 2: "SARSA", 3: "Q-Learning"}
+    room1_algo = st.session_state.get("room1_algorithm", "Policy Iteration")
+    algo_names = {1: room1_algo, 2: "SARSA", 3: "Q-Learning"}
     st.markdown(
         f'<div class="room-header"><h1>Room {room_num} — Environment ({algo_names[room_num]})</h1>'
         '<p>Click any grid cell below to configure it as normal, icy, or a wall.</p></div>',
@@ -860,7 +870,8 @@ def render_environment_page(room_num: int) -> None:
 
 def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
     p = room_prefix(room_num)
-    algo_names = {1: "Policy Iteration", 2: "SARSA", 3: "Q-Learning"}
+    room1_algo = st.session_state.get("room1_algorithm", "Policy Iteration")
+    algo_names = {1: room1_algo, 2: "SARSA", 3: "Q-Learning"}
     st.markdown(
         f'<div class="room-header"><h1>Room {room_num} — Training ({algo_names[room_num]})</h1></div>',
         unsafe_allow_html=True,
@@ -881,27 +892,47 @@ def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
         live_rows: list[dict] = []
 
         if room_num == 1:
-            alg_config = PolicyIterationConfig(
-                gamma=controls["gamma"],
-                theta=controls["theta"],
-                max_policy_iterations=controls["max_policy_iterations"],
-                max_evaluation_sweeps=controls["max_evaluation_sweeps"],
-                seed=controls["seed"],
-            )
+            if room1_algo == "Value Iteration":
+                alg_config = ValueIterationConfig(
+                    gamma=controls["gamma"],
+                    theta=controls["theta"],
+                    max_iterations=controls["max_iterations"],
+                    seed=controls["seed"],
+                )
 
-            def callback_pi(metric, _values, _policy) -> None:
-                live_rows.append(asdict(metric))
-                if metric.global_step % controls["live_update_every"] != 0 and metric.phase != "improvement":
-                    return
-                df = pd.DataFrame(live_rows)
-                status_slot.info(f"Policy Iteration {metric.policy_iteration} • sweep {metric.evaluation_sweep} • delta={metric.delta:.3e}")
-                eval_df = df[df["phase"] == "evaluation"]
-                if not eval_df.empty:
-                    chart_slot_1.line_chart(eval_df.set_index("global_step")[["delta"]], x_label="Sweep", y_label="Delta")
-                    chart_slot_2.line_chart(eval_df.set_index("global_step")[["mean_value"]], x_label="Sweep", y_label="Mean V(s)")
+                def callback_vi(metric, _values, _policy) -> None:
+                    live_rows.append(asdict(metric))
+                    if metric.iteration % controls["live_update_every"] != 0:
+                        return
+                    df = pd.DataFrame(live_rows)
+                    status_slot.info(f"Value Iteration sweep {metric.iteration} • delta={metric.delta:.3e}")
+                    chart_slot_1.line_chart(df.set_index("global_step")[["delta"]], x_label="Sweep", y_label="Delta")
+                    chart_slot_2.line_chart(df.set_index("global_step")[["mean_value"]], x_label="Sweep", y_label="Mean V(s)")
 
-            with st.spinner("Computing Policy Iteration..."):
-                res = run_policy_iteration(env, alg_config, callback=callback_pi)
+                with st.spinner("Computing Value Iteration..."):
+                    res = run_value_iteration(env, alg_config, callback=callback_vi)
+            else:
+                alg_config = PolicyIterationConfig(
+                    gamma=controls["gamma"],
+                    theta=controls["theta"],
+                    max_policy_iterations=controls["max_policy_iterations"],
+                    max_evaluation_sweeps=controls["max_evaluation_sweeps"],
+                    seed=controls["seed"],
+                )
+
+                def callback_pi(metric, _values, _policy) -> None:
+                    live_rows.append(asdict(metric))
+                    if metric.global_step % controls["live_update_every"] != 0 and metric.phase != "improvement":
+                        return
+                    df = pd.DataFrame(live_rows)
+                    status_slot.info(f"Policy Iteration {metric.policy_iteration} • sweep {metric.evaluation_sweep} • delta={metric.delta:.3e}")
+                    eval_df = df[df["phase"] == "evaluation"]
+                    if not eval_df.empty:
+                        chart_slot_1.line_chart(eval_df.set_index("global_step")[["delta"]], x_label="Sweep", y_label="Delta")
+                        chart_slot_2.line_chart(eval_df.set_index("global_step")[["mean_value"]], x_label="Sweep", y_label="Mean V(s)")
+
+                with st.spinner("Computing Policy Iteration..."):
+                    res = run_policy_iteration(env, alg_config, callback=callback_pi)
         elif room_num == 2:
             alg_config = SarsaConfig(
                 alpha=controls["alpha"],
@@ -964,8 +995,12 @@ def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
     m1, m2, m3 = st.columns(3)
     if room_num == 1:
         m1.metric("Converged", "Yes" if res.converged else "No")
-        m2.metric("Policy Iterations", res.policy_iterations)
-        m3.metric("Evaluation Sweeps", res.evaluation_sweeps)
+        if hasattr(res, "iterations"):
+            m2.metric("Value Iterations (Sweeps)", res.iterations)
+            m3.metric("Mean V(s)", f"{np.mean(list(res.values.values())):.3f}")
+        else:
+            m2.metric("Policy Iterations", res.policy_iterations)
+            m3.metric("Evaluation Sweeps", res.evaluation_sweeps)
     else:
         m1.metric("Episodes Run", res.episodes_run)
         m2.metric("Converged", "Yes" if res.converged else "No")
@@ -985,13 +1020,20 @@ def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
         )
     with c2:
         st.subheader("Policy Changes / Epsilon Decay")
-        y_col2 = "policy_changes" if room_num == 1 else "epsilon"
-        x_col2 = "policy_iteration" if room_num == 1 else "episode"
+        if room_num == 1:
+            y_col2 = "policy_changes"
+            x_col2 = "iteration" if hasattr(res, "iterations") else "policy_iteration"
+            x_label2 = "Value iteration (Sweep)" if hasattr(res, "iterations") else "Policy iteration"
+        else:
+            y_col2 = "epsilon"
+            x_col2 = "episode"
+            x_label2 = "Training episode"
         st.line_chart(
             frame.set_index(x_col2)[[y_col2]],
-            x_label="Policy iteration" if room_num == 1 else "Training episode",
+            x_label=x_label2,
             y_label="Changed actions" if room_num == 1 else "Exploration epsilon",
         )
+
 
     if room_num == 1 and res.converged:
         st.markdown(
@@ -1287,40 +1329,75 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
         controls = st.session_state[f"{p}_training_controls"]
         st.sidebar.subheader(algo_names[room_num])
         if room_num == 1:
+            selected_algo = st.sidebar.radio(
+                "Dynamic Programming Algorithm",
+                options=["Policy Iteration", "Value Iteration"],
+                index=0 if st.session_state.get("room1_algorithm", "Policy Iteration") == "Policy Iteration" else 1,
+                key=f"{p}_algo_selection",
+                help="Choose between Policy Iteration and Value Iteration for Room 1.",
+            )
+            if selected_algo != st.session_state.get("room1_algorithm"):
+                st.session_state["room1_algorithm"] = selected_algo
+                invalidate_room_model(1)
+                st.rerun()
+
             gamma = st.sidebar.slider(
-                "Gamma", 0.0, 0.999, float(controls["gamma"]), 0.001,
+                "Gamma", 0.0, 0.999, float(controls.get("gamma", 0.95)), 0.001,
                 key=f"{p}_gamma",
                 help="Discount factor: higher values make future rewards more important.",
             )
             theta = st.sidebar.number_input(
-                "Theta", 1e-12, 1.0, float(controls["theta"]), format="%.8f",
+                "Theta", 1e-12, 1.0, float(controls.get("theta", 1e-6)), format="%.8f",
                 key=f"{p}_theta",
-                help="Policy Evaluation stops when the largest value change falls below this threshold.",
+                help="Value update convergence threshold.",
             )
-            max_pi = st.sidebar.number_input(
-                "Max policy iterations", 1, 1000, int(controls["max_policy_iterations"]),
-                key=f"{p}_max_pi",
-                help="Safety limit on complete policy evaluation-and-improvement cycles.",
-            )
-            max_sweeps = st.sidebar.number_input(
-                "Max evaluation sweeps", 1, 100000, int(controls["max_evaluation_sweeps"]),
-                key=f"{p}_max_sweeps",
-                help="Maximum Bellman sweeps allowed during each policy evaluation phase.",
-            )
-            seed = st.sidebar.number_input(
-                "Seed", 0, value=int(controls["seed"]), key=f"{p}_seed",
-                help="Controls reproducible policy initialization and tie-breaking.",
-            )
-            live_update = st.sidebar.number_input(
-                "Update charts every N sweeps", 1, 1000, int(controls["live_update_every"]),
-                key=f"{p}_live_update",
-                help="Lower values refresh live graphs more often but add UI overhead.",
-            )
-            st.session_state[f"{p}_training_controls"] = {
-                "gamma": float(gamma), "theta": float(theta),
-                "max_policy_iterations": int(max_pi), "max_evaluation_sweeps": int(max_sweeps),
-                "seed": int(seed), "live_update_every": int(live_update),
-            }
+            if selected_algo == "Value Iteration":
+                max_vi = st.sidebar.number_input(
+                    "Max value iterations (sweeps)", 1, 100000, int(controls.get("max_iterations", 1000)),
+                    key=f"{p}_max_vi",
+                    help="Maximum Bellman optimality sweeps allowed for Value Iteration.",
+                )
+                seed = st.sidebar.number_input(
+                    "Seed", 0, value=int(controls.get("seed", 42)), key=f"{p}_seed",
+                    help="Controls reproducible policy tie-breaking.",
+                )
+                live_update = st.sidebar.number_input(
+                    "Update charts every N sweeps", 1, 1000, int(controls.get("live_update_every", 5)),
+                    key=f"{p}_live_update",
+                    help="Lower values refresh live graphs more often but add UI overhead.",
+                )
+                st.session_state[f"{p}_training_controls"] = {
+                    "algorithm": "Value Iteration",
+                    "gamma": float(gamma), "theta": float(theta),
+                    "max_iterations": int(max_vi),
+                    "seed": int(seed), "live_update_every": int(live_update),
+                }
+            else:
+                max_pi = st.sidebar.number_input(
+                    "Max policy iterations", 1, 1000, int(controls.get("max_policy_iterations", 100)),
+                    key=f"{p}_max_pi",
+                    help="Safety limit on complete policy evaluation-and-improvement cycles.",
+                )
+                max_sweeps = st.sidebar.number_input(
+                    "Max evaluation sweeps", 1, 100000, int(controls.get("max_evaluation_sweeps", 10000)),
+                    key=f"{p}_max_sweeps",
+                    help="Maximum Bellman sweeps allowed during each policy evaluation phase.",
+                )
+                seed = st.sidebar.number_input(
+                    "Seed", 0, value=int(controls.get("seed", 42)), key=f"{p}_seed",
+                    help="Controls reproducible policy initialization and tie-breaking.",
+                )
+                live_update = st.sidebar.number_input(
+                    "Update charts every N sweeps", 1, 1000, int(controls.get("live_update_every", 5)),
+                    key=f"{p}_live_update",
+                    help="Lower values refresh live graphs more often but add UI overhead.",
+                )
+                st.session_state[f"{p}_training_controls"] = {
+                    "algorithm": "Policy Iteration",
+                    "gamma": float(gamma), "theta": float(theta),
+                    "max_policy_iterations": int(max_pi), "max_evaluation_sweeps": int(max_sweeps),
+                    "seed": int(seed), "live_update_every": int(live_update),
+                }
         else:
             alpha = st.sidebar.slider(
                 "Alpha (learning rate)", 0.01, 1.0, float(controls["alpha"]), 0.01,
@@ -1435,6 +1512,10 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
             try:
                 if room_num == 1:
                     env_l, config_l, res_l = import_room1_artifact(uploaded.getvalue().decode("utf-8"))
+                    if isinstance(config_l, ValueIterationConfig):
+                        st.session_state["room1_algorithm"] = "Value Iteration"
+                    else:
+                        st.session_state["room1_algorithm"] = "Policy Iteration"
                 elif room_num == 2:
                     env_l, config_l, res_l = import_room2_artifact(uploaded.getvalue().decode("utf-8"))
                 else:

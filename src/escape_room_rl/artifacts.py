@@ -11,6 +11,11 @@ from .policy_iteration import (
     PolicyIterationResult,
     TrainingMetric,
 )
+from .value_iteration import (
+    ValueIterationConfig,
+    ValueIterationMetric,
+    ValueIterationResult,
+)
 from .q_learning import (
     QLearningConfig,
     QLearningResult,
@@ -47,18 +52,37 @@ def parse_state_action(value: str) -> tuple[State, Action]:
 
 
 # =====================================================================
-# Room 1 (Policy Iteration)
+# Room 1 (Policy Iteration / Value Iteration)
 # =====================================================================
 
 def export_room1_artifact(
     environment: Room1Environment,
-    algorithm_config: PolicyIterationConfig,
-    result: PolicyIterationResult,
+    algorithm_config: PolicyIterationConfig | ValueIterationConfig,
+    result: PolicyIterationResult | ValueIterationResult,
 ) -> str:
+    is_vi = isinstance(algorithm_config, ValueIterationConfig)
+    algorithm_name = "value_iteration" if is_vi else "policy_iteration"
+
+    result_dict: dict[str, Any] = {
+        "values": {
+            state_key(state): value for state, value in result.values.items()
+        },
+        "policy": {
+            state_key(state): action.value for state, action in result.policy.items()
+        },
+        "metrics": [asdict(metric) for metric in result.metrics],
+        "converged": result.converged,
+    }
+    if is_vi:
+        result_dict["iterations"] = result.iterations
+    else:
+        result_dict["policy_iterations"] = result.policy_iterations
+        result_dict["evaluation_sweeps"] = result.evaluation_sweeps
+
     payload: dict[str, Any] = {
         "artifact_version": ARTIFACT_VERSION,
         "room": 1,
-        "algorithm": "policy_iteration",
+        "algorithm": algorithm_name,
         "environment": {
             "width": environment.config.width,
             "height": environment.config.height,
@@ -79,30 +103,30 @@ def export_room1_artifact(
             },
         },
         "algorithm_config": asdict(algorithm_config),
-        "result": {
-            "values": {
-                state_key(state): value for state, value in result.values.items()
-            },
-            "policy": {
-                state_key(state): action.value for state, action in result.policy.items()
-            },
-            "metrics": [asdict(metric) for metric in result.metrics],
-            "converged": result.converged,
-            "policy_iterations": result.policy_iterations,
-            "evaluation_sweeps": result.evaluation_sweeps,
-        },
+        "result": result_dict,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def import_room1_artifact(
     raw_json: str,
-) -> tuple[Room1Environment, PolicyIterationConfig, PolicyIterationResult]:
+) -> tuple[
+    Room1Environment,
+    PolicyIterationConfig | ValueIterationConfig,
+    PolicyIterationResult | ValueIterationResult,
+]:
     payload = json.loads(raw_json)
     if payload.get("artifact_version") != ARTIFACT_VERSION:
         raise ValueError("Unsupported artifact version.")
-    if payload.get("room") != 1 or payload.get("algorithm") != "policy_iteration":
-        raise ValueError("The uploaded artifact is not a Room 1 Policy Iteration model.")
+    if payload.get("room") != 1 or payload.get("algorithm") not in (
+        "policy_iteration",
+        "value_iteration",
+    ):
+        raise ValueError(
+            "The uploaded artifact is not a Room 1 Policy Iteration or Value Iteration model."
+        )
+
+    algorithm_name = payload.get("algorithm", "policy_iteration")
 
     environment_data = payload["environment"]
     room_config = Room1Config(
@@ -129,23 +153,39 @@ def import_room1_artifact(
         },
     )
     environment = Room1Environment(room_config)
-    algorithm_config = PolicyIterationConfig(**payload["algorithm_config"])
+
     result_data = payload["result"]
-    result = PolicyIterationResult(
-        values={
-            parse_state(state): float(value)
-            for state, value in result_data["values"].items()
-        },
-        policy={
-            parse_state(state): Action(action)
-            for state, action in result_data["policy"].items()
-        },
-        metrics=[TrainingMetric(**metric) for metric in result_data["metrics"]],
-        converged=bool(result_data["converged"]),
-        policy_iterations=int(result_data["policy_iterations"]),
-        evaluation_sweeps=int(result_data["evaluation_sweeps"]),
-    )
+    values = {
+        parse_state(state): float(value)
+        for state, value in result_data["values"].items()
+    }
+    policy = {
+        parse_state(state): Action(action)
+        for state, action in result_data["policy"].items()
+    }
+
+    if algorithm_name == "value_iteration":
+        algorithm_config = ValueIterationConfig(**payload["algorithm_config"])
+        result = ValueIterationResult(
+            values=values,
+            policy=policy,
+            metrics=[ValueIterationMetric(**metric) for metric in result_data["metrics"]],
+            converged=bool(result_data["converged"]),
+            iterations=int(result_data.get("iterations", len(result_data["metrics"]))),
+        )
+    else:
+        algorithm_config = PolicyIterationConfig(**payload["algorithm_config"])
+        result = PolicyIterationResult(
+            values=values,
+            policy=policy,
+            metrics=[TrainingMetric(**metric) for metric in result_data["metrics"]],
+            converged=bool(result_data["converged"]),
+            policy_iterations=int(result_data["policy_iterations"]),
+            evaluation_sweeps=int(result_data["evaluation_sweeps"]),
+        )
+
     return environment, algorithm_config, result
+
 
 
 # =====================================================================

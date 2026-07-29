@@ -38,6 +38,13 @@ from .sarsa import (
     run_sarsa,
 )
 
+from .value_iteration import (
+    ValueIterationConfig,
+    ValueIterationMetric,
+    ValueIterationResult,
+    run_value_iteration,
+)
+
 __all__ = [
     "Action",
     "EpisodeResult",
@@ -58,6 +65,9 @@ __all__ = [
     "SarsaTrainingMetric",
     "SlipperyCell",
     "TrainingMetric",
+    "ValueIterationConfig",
+    "ValueIterationMetric",
+    "ValueIterationResult",
     "default_room1_config",
     "default_room2_config",
     "default_room3_config",
@@ -66,4 +76,6 @@ __all__ = [
     "run_policy_iteration",
     "run_q_learning",
     "run_sarsa",
+    "run_value_iteration",
 ]
+
