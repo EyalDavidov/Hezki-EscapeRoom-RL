@@ -24,6 +24,13 @@ DEFAULT_ROOM2_WALLS: frozenset[State] = frozenset(
     }
 )
 
+DEFAULT_ROOM2_SLIPPERY: dict[State, SlipperyCell] = {
+    (3, 0): SlipperyCell(),
+    (4, 5): SlipperyCell(),
+    (5, 4): SlipperyCell(),
+    (6, 9): SlipperyCell(),
+}
+
 DEFAULT_ROOM2_REWARDS: dict[str, float] = {
     "step": -0.1,
     "goal_reached": 10.0,
@@ -40,7 +47,9 @@ class Room2Config:
     start: State = (0, 0)
     goal: State = (9, 9)
     walls: frozenset[State] = DEFAULT_ROOM2_WALLS
-    slippery: dict[State, SlipperyCell] = field(default_factory=dict)
+    slippery: dict[State, SlipperyCell] = field(
+        default_factory=lambda: dict(DEFAULT_ROOM2_SLIPPERY)
+    )
     rewards: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_ROOM2_REWARDS))
     terminal_states: frozenset[State] = field(default_factory=lambda: frozenset({(9, 9)}))
     cell_rewards: dict[State, float] = field(default_factory=dict)

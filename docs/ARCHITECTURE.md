@@ -12,7 +12,7 @@ The system is a single Streamlit application:
 6. The environments and reinforcement-learning algorithms run in Python and remain independent of the UI.
 7. Streamlit receives the results and renders the dog, policies, labeled live training charts, labeled test charts, and automatic episode replays at five base timesteps per second.
 
-Rooms 1–3 are grid environments. Room 4 uses a continuous Flappy Bird environment with DQN. Room 5 uses a one-way multi-lane road environment with PPO.
+Rooms 1–3 are grid environments. Rooms 4 & 5 use continuous and driving environments trained with PPO.
 
 ## Directory structure
 
@@ -40,7 +40,7 @@ Hezki-EscapeRoom-RL/
 |   |-- sarsa.py                # On-policy TD control
 |   |-- q_learning.py           # Off-policy TD control
 |   |-- dqn.py                  # Deep Q-Network for Room 4
-|   |-- ppo.py                  # Actor-critic PPO for Room 5
+|   |-- ppo.py                  # Actor-critic PPO for Room 4 and Room 5
 |   |-- evaluation.py           # Test execution and episode trajectories
 |   |-- artifacts.py            # JSON model persistence
 |   `-- visualization.py        # HTML grid generation

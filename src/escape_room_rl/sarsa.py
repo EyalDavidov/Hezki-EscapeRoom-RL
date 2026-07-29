@@ -45,6 +45,9 @@ class SarsaTrainingMetric:
     mean_q_value: float
 
 
+from .evaluation import EpisodeResult, EpisodeStep
+
+
 @dataclass
 class SarsaResult:
     q_table: dict[tuple[State, Action], float]
@@ -53,6 +56,7 @@ class SarsaResult:
     metrics: list[SarsaTrainingMetric] = field(default_factory=list)
     converged: bool = False
     episodes_run: int = 0
+    training_episodes: list[EpisodeResult] = field(default_factory=list)
 
 
 SarsaCallback = Callable[[SarsaTrainingMetric, dict[State, float], dict[State, Action]], None]
@@ -114,6 +118,7 @@ def run_sarsa(
             q_table[(state, action)] = 0.0
 
     metrics: list[SarsaTrainingMetric] = []
+    training_episodes: list[EpisodeResult] = []
     epsilon = config.epsilon_start
 
     for episode in range(1, config.episodes + 1):
@@ -127,6 +132,7 @@ def run_sarsa(
         max_delta = 0.0
         timesteps = 0
         success = False
+        trajectory: list[EpisodeStep] = []
 
         for _ in range(config.max_timesteps):
             timesteps += 1
@@ -150,6 +156,19 @@ def run_sarsa(
             new_q = old_q + config.alpha * (target - old_q)
             q_table[(state, action)] = float(new_q)
             max_delta = max(max_delta, abs(new_q - old_q))
+
+            trajectory.append(
+                EpisodeStep(
+                    timestep=timesteps,
+                    state=state,
+                    action=action,
+                    next_state=next_state,
+                    reward=reward,
+                    cumulative_reward=float(total_reward),
+                    events=transition.events,
+                    outcome=transition.outcome,
+                )
+            )
 
             if transition.done:
                 success = next_state == environment.goal
@@ -175,6 +194,18 @@ def run_sarsa(
         )
         metrics.append(metric)
 
+        training_episodes.append(
+            EpisodeResult(
+                episode=episode,
+                success=success,
+                timesteps=timesteps,
+                total_reward=float(total_reward),
+                slipped_count=sum(1 for s in trajectory if "slipped" in s.events),
+                slippery_entries=sum(1 for s in trajectory if "entered_slippery" in s.events),
+                trajectory=trajectory,
+            )
+        )
+
         if callback is not None:
             callback(metric, values, policy)
 
@@ -186,4 +217,6 @@ def run_sarsa(
         metrics=metrics,
         converged=any(m.success for m in metrics[-20:]),  # High recent success rate
         episodes_run=config.episodes,
+        training_episodes=training_episodes,
     )
+

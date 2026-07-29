@@ -16,7 +16,7 @@ A reinforcement-learning final project built as a five-room escape game. Each ro
 - Every control includes contextual help, all charts identify both axes, and training charts are displayed side by side.
 - Test replays play automatically at a base rate of five timesteps per second with a selectable speed multiplier.
 
-- Room 4 is a continuous Flappy Bird environment trained with DQN.
+- Room 4 is a continuous Flappy Bird environment trained with PPO.
 - Room 5 is a configurable 2–6 lane, one-way driving environment trained with PPO. It includes adjustable forward vision, same-direction traffic, collision avoidance, overtaking rewards, live charts, testing, replay, and JSON model artifacts.
 
 ## Run locally

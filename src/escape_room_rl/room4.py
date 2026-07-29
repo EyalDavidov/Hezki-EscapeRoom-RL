@@ -148,12 +148,18 @@ class Room4Transition:
 class Room4Environment:
     """Continuous 10x10m Flappy Bird Environment."""
 
+    observation_size = 4
+    action_size = len(Action4)
+    action_enum = Action4
+
     def __init__(self, config: Room4Config | None = None):
         self.config = config or Room4Config()
         self.config.validate()
+        self.current_state: State4 = self.config.start
 
-    def reset(self) -> State4:
-        return self.config.start
+    def reset(self, seed: int | None = None) -> State4:
+        self.current_state = self.config.start
+        return self.current_state
 
     def is_terminal(self, state: State4) -> bool:
         x, y, _, _ = state
@@ -166,7 +172,14 @@ class Room4Environment:
                 return True
         return False
 
-    def step(self, state: State4, action: Action4) -> Room4Transition:
+    def step(self, arg1: Any, arg2: Any = None) -> Room4Transition:
+        if arg2 is None:
+            state = self.current_state
+            action = Action4(arg1)
+        else:
+            state = arg1
+            action = Action4(arg2)
+
         x, y, vx, vy = state
         target_vx, target_vy = ACTION_VELOCITIES[action]
 
@@ -179,6 +192,7 @@ class Room4Environment:
         new_y = y + new_vy * self.config.dt
 
         next_state: State4 = (new_x, new_y, new_vx, new_vy)
+        self.current_state = next_state
         events: list[str] = ["step"]
 
         # Check collisions & termination

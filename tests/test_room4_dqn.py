@@ -8,8 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from escape_room_rl.artifacts import export_room4_artifact, import_room4_artifact
-from escape_room_rl.dqn import DQNConfig, run_dqn
-from escape_room_rl.evaluation import evaluate_room4_dqn
+from escape_room_rl.evaluation import evaluate_room4_ppo
+from escape_room_rl.ppo import PPOConfig, run_ppo
 from escape_room_rl.room4 import (
     Action4,
     PipeObstacle,
@@ -19,7 +19,7 @@ from escape_room_rl.room4 import (
 )
 
 
-class Room4DQNTests(unittest.TestCase):
+class Room4PPOTests(unittest.TestCase):
     def test_five_pipes_are_evenly_spaced_and_valid(self) -> None:
         pipes = distribute_pipes_evenly(
             [
@@ -80,22 +80,20 @@ class Room4DQNTests(unittest.TestCase):
         # Position inside gap (5.0, 5.0) should NOT collide!
         self.assertFalse(env.is_terminal((5.0, 5.0, 0.0, 0.0)))
 
-    def test_dqn_training_and_eval(self) -> None:
+    def test_ppo_training_and_eval(self) -> None:
         config_env = Room4Config(
             pipes=[PipeObstacle(x=4.0, width=0.6, gap_start=2.0, gap_size=6.0)],
         )
         env = Room4Environment(config_env)
-        config_algo = DQNConfig(
+        config_algo = PPOConfig(
             alpha=0.001,
-            episodes=15,
-            max_timesteps=100,
-            batch_size=16,
-            buffer_capacity=500,
+            episodes=5,
+            max_timesteps=50,
             hidden_dims=(32, 32),
             seed=42,
         )
-        result = run_dqn(env, config_algo)
-        self.assertEqual(len(result.metrics), 15)
+        result = run_ppo(env, config_algo)
+        self.assertEqual(len(result.metrics), 5)
         self.assertGreaterEqual(result.training_duration_seconds, 0.0)
         self.assertEqual(
             sum(result.action_counts.values()),
@@ -104,7 +102,7 @@ class Room4DQNTests(unittest.TestCase):
         self.assertEqual(set(result.action_counts), {action.name for action in Action4})
 
         # Evaluation test
-        eval_results = evaluate_room4_dqn(env, result.policy_net, episodes=3, max_timesteps=100, seed=42)
+        eval_results = evaluate_room4_ppo(env, result.policy_net, episodes=3, max_timesteps=50, seed=42)
         self.assertEqual(len(eval_results), 3)
 
     def test_room4_artifact_roundtrip(self) -> None:
@@ -115,8 +113,8 @@ class Room4DQNTests(unittest.TestCase):
             ],
         )
         env = Room4Environment(config_env)
-        config_algo = DQNConfig(episodes=5, hidden_dims=(32, 32), seed=12)
-        result = run_dqn(env, config_algo)
+        config_algo = PPOConfig(episodes=5, hidden_dims=(32, 32), seed=12)
+        result = run_ppo(env, config_algo)
 
         artifact_json = export_room4_artifact(env, config_algo, result)
         loaded_env, loaded_algo, loaded_result = import_room4_artifact(artifact_json)
@@ -131,17 +129,16 @@ class Room4DQNTests(unittest.TestCase):
             result.training_duration_seconds,
         )
 
-
-    def test_dqn_activation_functions(self) -> None:
+    def test_ppo_activation_functions(self) -> None:
         for act in ["ReLU", "LeakyReLU", "Tanh", "ELU", "SiLU"]:
-            config_algo = DQNConfig(episodes=2, max_timesteps=10, batch_size=8, buffer_capacity=100, activation_fn=act, seed=42)
+            config_algo = PPOConfig(episodes=2, max_timesteps=10, activation_fn=act, seed=42)
             env = Room4Environment(Room4Config())
-            result = run_dqn(env, config_algo)
+            result = run_ppo(env, config_algo)
             self.assertEqual(result.config.activation_fn, act)
             self.assertEqual(len(result.metrics), 2)
 
         with self.assertRaises(ValueError):
-            DQNConfig(activation_fn="InvalidActivation")
+            PPOConfig(activation_fn="InvalidActivation")
 
 
 if __name__ == "__main__":

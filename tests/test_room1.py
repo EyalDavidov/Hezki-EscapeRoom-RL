@@ -129,6 +129,7 @@ class Room1EnvironmentTests(unittest.TestCase):
 
     def test_custom_start_goal_termination_and_cell_reward(self) -> None:
         config = default_room1_config()
+        config.slippery = {}
         config.start = (1, 0)
         config.goal = (8, 9)
         config.terminal_states = frozenset({(8, 9), (4, 4)})

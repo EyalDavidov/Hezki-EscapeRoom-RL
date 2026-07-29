@@ -36,6 +36,9 @@ class ValueIterationMetric:
     policy_changes: int
 
 
+from .evaluation import EpisodeResult, evaluate_policy
+
+
 @dataclass
 class ValueIterationResult:
     values: dict[State, float]
@@ -43,6 +46,7 @@ class ValueIterationResult:
     metrics: list[ValueIterationMetric] = field(default_factory=list)
     converged: bool = False
     iterations: int = 0
+    training_episodes: list[EpisodeResult] = field(default_factory=list)
 
 
 MetricCallback = Callable[
@@ -115,18 +119,23 @@ def run_value_iteration(
             callback(metric, values.copy(), policy.copy())
 
         if last_delta < config.theta:
+            sample_eps = evaluate_policy(environment, policy, episodes=5, max_timesteps=100, seed=config.seed)
             return ValueIterationResult(
                 values=values,
                 policy=policy,
                 metrics=metrics,
                 converged=True,
                 iterations=iteration,
+                training_episodes=sample_eps,
             )
 
+    sample_eps = evaluate_policy(environment, policy, episodes=5, max_timesteps=100, seed=config.seed)
     return ValueIterationResult(
         values=values,
         policy=policy,
         metrics=metrics,
         converged=False,
         iterations=config.max_iterations,
+        training_episodes=sample_eps,
     )
+

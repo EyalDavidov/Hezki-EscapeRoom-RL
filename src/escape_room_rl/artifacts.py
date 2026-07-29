@@ -421,7 +421,6 @@ def export_room4_artifact(
     algorithm_config: Any,
     result: Any,
 ) -> str:
-    # Convert state_dict tensors to list
     weights = {k: v.cpu().tolist() for k, v in result.policy_net.state_dict().items()}
     pipes_data = [
         {
@@ -436,7 +435,7 @@ def export_room4_artifact(
     payload: dict[str, Any] = {
         "artifact_version": ARTIFACT_VERSION,
         "room": 4,
-        "algorithm": "dqn",
+        "algorithm": "ppo",
         "environment": {
             "width": float(environment.config.width),
             "height": float(environment.config.height),
@@ -444,23 +443,11 @@ def export_room4_artifact(
             "start": list(environment.config.start),
             "goal_x": float(environment.config.goal_x),
             "pipes": pipes_data,
-            "rewards": environment.config.rewards,
+            "rewards": dict(environment.config.rewards),
         },
         "algorithm_config": {
-            "alpha": float(algorithm_config.alpha),
-            "gamma": float(algorithm_config.gamma),
-            "epsilon_start": float(algorithm_config.epsilon_start),
-            "epsilon_min": float(algorithm_config.epsilon_min),
-            "epsilon_decay": float(algorithm_config.epsilon_decay),
-            "episodes": int(algorithm_config.episodes),
-            "max_timesteps": int(algorithm_config.max_timesteps),
-            "buffer_capacity": int(algorithm_config.buffer_capacity),
-            "batch_size": int(algorithm_config.batch_size),
-            "target_update_freq": int(algorithm_config.target_update_freq),
-            "train_freq": int(getattr(algorithm_config, "train_freq", 2)),
+            **asdict(algorithm_config),
             "hidden_dims": list(algorithm_config.hidden_dims),
-            "activation_fn": str(getattr(algorithm_config, "activation_fn", "ReLU")),
-            "seed": int(algorithm_config.seed),
         },
         "result": {
             "weights": weights,
@@ -483,14 +470,14 @@ def import_room4_artifact(
     raw_json: str,
 ) -> tuple[Any, Any, Any]:
     import torch
-    from .dqn import DQNConfig, DQNNetwork, DQNResult, DQNTrainingMetric
+    from .ppo import ActorCriticNetwork, PPOConfig, PPOResult, PPOTrainingMetric
     from .room4 import PipeObstacle, Room4Config, Room4Environment
 
     payload = json.loads(raw_json)
     if payload.get("artifact_version") != ARTIFACT_VERSION:
         raise ValueError("Unsupported artifact version.")
-    if payload.get("room") != 4 or payload.get("algorithm") != "dqn":
-        raise ValueError("The uploaded artifact is not a Room 4 DQN model.")
+    if payload.get("room") != 4 or payload.get("algorithm") != "ppo":
+        raise ValueError("The uploaded artifact is not a Room 4 PPO model.")
 
     env_data = payload["environment"]
     pipes = [
@@ -513,42 +500,27 @@ def import_room4_artifact(
     )
     environment = Room4Environment(room_config)
 
-    algo_data = payload["algorithm_config"]
-    algorithm_config = DQNConfig(
-        alpha=float(algo_data["alpha"]),
-        gamma=float(algo_data["gamma"]),
-        epsilon_start=float(algo_data["epsilon_start"]),
-        epsilon_min=float(algo_data["epsilon_min"]),
-        epsilon_decay=float(algo_data["epsilon_decay"]),
-        episodes=int(algo_data["episodes"]),
-        max_timesteps=int(algo_data["max_timesteps"]),
-        buffer_capacity=int(algo_data["buffer_capacity"]),
-        batch_size=int(algo_data["batch_size"]),
-        target_update_freq=int(algo_data["target_update_freq"]),
-        train_freq=int(algo_data.get("train_freq", 2)),
-        hidden_dims=tuple(algo_data["hidden_dims"]),
-        activation_fn=str(algo_data.get("activation_fn", "ReLU")),
-        seed=int(algo_data["seed"]),
-    )
+    algo_data = dict(payload["algorithm_config"])
+    algo_data["hidden_dims"] = tuple(algo_data["hidden_dims"])
+    algorithm_config = PPOConfig(**algo_data)
 
-    result_data = payload["result"]
-    policy_net = DQNNetwork(
-        state_dim=4,
-        action_dim=9,
+    policy_net = ActorCriticNetwork(
+        observation_dim=environment.observation_size,
+        action_dim=environment.action_size,
         hidden_dims=algorithm_config.hidden_dims,
         activation_fn=algorithm_config.activation_fn,
     )
 
-
     state_dict = {
         k: torch.tensor(v, dtype=torch.float32)
-        for k, v in result_data["weights"].items()
+        for k, v in payload["result"]["weights"].items()
     }
     policy_net.load_state_dict(state_dict)
 
-    metrics = [DQNTrainingMetric(**m) for m in result_data["metrics"]]
+    result_data = payload["result"]
+    metrics = [PPOTrainingMetric(**m) for m in result_data["metrics"]]
 
-    result = DQNResult(
+    result = PPOResult(
         policy_net=policy_net,
         metrics=metrics,
         converged=bool(result_data["converged"]),

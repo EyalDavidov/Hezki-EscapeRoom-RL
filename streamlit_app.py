@@ -11,6 +11,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -31,7 +33,7 @@ from escape_room_rl.artifacts import (  # noqa: E402
 )
 from escape_room_rl.evaluation import (  # noqa: E402
     evaluate_policy,
-    evaluate_room4_dqn,
+    evaluate_room4_ppo,
     evaluate_room5_ppo,
 )
 from escape_room_rl.policy_iteration import (  # noqa: E402
@@ -59,6 +61,7 @@ from escape_room_rl.dqn import (  # noqa: E402
 from escape_room_rl.ppo import PPOConfig, run_ppo  # noqa: E402
 from escape_room_rl.room1 import (  # noqa: E402
     DEFAULT_REWARDS,
+    DEFAULT_SLIPPERY,
     DEFAULT_WALLS,
     SLIP_OUTCOMES,
     SUPPORTED_REWARD_EVENTS,
@@ -69,6 +72,7 @@ from escape_room_rl.room1 import (  # noqa: E402
 )
 from escape_room_rl.room2 import (  # noqa: E402
     DEFAULT_ROOM2_REWARDS,
+    DEFAULT_ROOM2_SLIPPERY,
     DEFAULT_ROOM2_WALLS,
     Room2Config,
     Room2Environment,
@@ -312,7 +316,7 @@ def initialize_state() -> None:
         # Room 1
         "room1_algorithm": "Policy Iteration",
         "room1_walls": set(DEFAULT_WALLS),
-        "room1_slippery": {},
+        "room1_slippery": dict(DEFAULT_SLIPPERY),
         "room1_start": (0, 0),
         "room1_goal": (9, 9),
         "room1_terminal_states": {(9, 9)},
@@ -343,7 +347,7 @@ def initialize_state() -> None:
         "room1_random_controls": {"wall_count": 20, "icy_count": 8, "seed": 42},
         # Room 2 (SARSA)
         "room2_walls": set(DEFAULT_ROOM2_WALLS),
-        "room2_slippery": {},
+        "room2_slippery": dict(DEFAULT_ROOM2_SLIPPERY),
         "room2_start": (0, 0),
         "room2_goal": (9, 9),
         "room2_terminal_states": {(9, 9)},
@@ -405,7 +409,7 @@ def initialize_state() -> None:
             "seed": 123,
         },
         "room3_random_controls": {"wall_count": 14, "icy_count": 6, "seed": 42},
-        # Room 4 (DQN - Flappy Bird)
+        # Room 4 (PPO - Flappy Bird)
         "room4_pipes": [
             PipeObstacle(x=2.5, width=0.6, gap_start=3.5, gap_size=3.0),
             PipeObstacle(x=5.0, width=0.6, gap_start=2.0, gap_size=3.0),
@@ -418,18 +422,19 @@ def initialize_state() -> None:
         "room4_algorithm_config": None,
         "room4_test_results": None,
         "room4_training_controls": {
-            "alpha": 0.001,
+            "alpha": 0.0003,
             "gamma": 0.99,
-            "epsilon_start": 1.0,
-            "epsilon_min": 0.05,
-            "epsilon_decay": 0.995,
+            "gae_lambda": 0.95,
+            "clip_epsilon": 0.2,
+            "entropy_coefficient": 0.01,
+            "value_coefficient": 0.5,
+            "update_epochs": 4,
+            "mini_batch_size": 64,
             "episodes": 300,
             "max_timesteps": 500,
-            "buffer_capacity": 10000,
-            "batch_size": 64,
-            "target_update_freq": 100,
             "hidden_layers": 2,
-            "hidden_units": 32,
+            "hidden_units": 64,
+            "activation_fn": "Tanh",
             "seed": 42,
             "live_update_every": 10,
         },
@@ -971,10 +976,238 @@ def render_environment_page(room_num: int) -> None:
         for (x, y), probabilities in sorted(slippery.items()):
             rows.append({"x": x, "y": y, **probabilities.as_dict()})
         st.subheader("Icy-cell transition probabilities")
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+def render_episode_replay_visualizer(
+    environment: Any,
+    episodes: list[Any],
+    key_prefix: str,
+    room_num: int,
+    policy: dict[State, Action] | None = None,
+    values: dict[State, float] | None = None,
+    title: str = "Episode Replay & Animation",
+) -> None:
+    if not episodes:
+        st.info("No episode replays recorded.")
+        return
+
+    st.subheader(title)
+
+    def format_ep_option(index: int) -> str:
+        ep = episodes[index]
+        reward_val = getattr(ep, "total_reward", 0.0)
+        success_val = getattr(ep, "success", False)
+        status_str = "Success ✅" if success_val else "Failed ❌"
+        extra = ""
+        if hasattr(ep, "pipes_passed"):
+            extra = f", Pipes: {ep.pipes_passed}"
+        elif hasattr(ep, "overtakes"):
+            extra = f", Overtakes: {ep.overtakes}"
+        elif hasattr(ep, "slipped_count") and ep.slipped_count > 0:
+            extra = f", Slips: {ep.slipped_count}"
+        return f"Episode {getattr(ep, 'episode', index + 1)} ({status_str}, Reward: {reward_val:.2f}{extra})"
+
+    def on_ep_change() -> None:
+        st.session_state[f"{key_prefix}_is_playing"] = False
+        st.session_state[f"{key_prefix}_step"] = 0
+
+    ep_select_key = f"{key_prefix}_select"
+    selected_idx = st.selectbox(
+        "Select episode to replay",
+        options=list(range(len(episodes))),
+        format_func=format_ep_option,
+        key=ep_select_key,
+        on_change=on_ep_change,
+        help="Choose which recorded episode to replay.",
+    )
+
+    selected_ep = episodes[selected_idx]
+    trajectory = getattr(selected_ep, "trajectory", [])
+    if not trajectory:
+        st.info("This episode has an empty trajectory.")
+        return
+
+    total_steps = len(trajectory)
+
+    step_key = f"{key_prefix}_step"
+    playing_key = f"{key_prefix}_is_playing"
+
+    if step_key not in st.session_state:
+        st.session_state[step_key] = 0
+    if playing_key not in st.session_state:
+        st.session_state[playing_key] = False
+
+    if st.session_state[step_key] >= total_steps:
+        st.session_state[step_key] = 0
+
+    is_playing = st.session_state[playing_key]
+
+    col_prev, col_toggle, col_next, col_speed = st.columns([1, 1, 1, 2], vertical_alignment="bottom")
+
+    with col_prev:
+        if st.button("◀ Step Back", key=f"{key_prefix}_btn_prev", use_container_width=True, help="Step back 1 timestep (Keyboard: Left Arrow ←)"):
+            st.session_state[playing_key] = False
+            st.session_state[step_key] = max(0, st.session_state[step_key] - 1)
+            st.rerun()
+
+    with col_toggle:
+        toggle_label = "⏸ Pause" if is_playing else "▶ Play"
+        if st.button(toggle_label, key=f"{key_prefix}_btn_toggle", type="primary" if not is_playing else "secondary", use_container_width=True, help="Play/Pause automatic replay (Keyboard: Spacebar)"):
+            st.session_state[playing_key] = not is_playing
+            if st.session_state[playing_key] and st.session_state[step_key] >= total_steps - 1:
+                st.session_state[step_key] = 0
+            st.rerun()
+
+    with col_next:
+        if st.button("Step Next ▶", key=f"{key_prefix}_btn_next", use_container_width=True, help="Step forward 1 timestep (Keyboard: Right Arrow →)"):
+            st.session_state[playing_key] = False
+            st.session_state[step_key] = min(total_steps - 1, st.session_state[step_key] + 1)
+            st.rerun()
+
+    with col_speed:
+        playback_speed = st.select_slider(
+            "Playback speed",
+            options=[0.5, 1.0, 2.0, 4.0],
+            value=1.0,
+            format_func=lambda val: f"{val:g}×",
+            key=f"{key_prefix}_speed",
+            help="Controls auto-play speed.",
+        )
+
+    def on_slider_change() -> None:
+        st.session_state[playing_key] = False
+        st.session_state[step_key] = int(st.session_state[f"{key_prefix}_slider_widget"])
+
+    st.slider(
+        "Timeline step",
+        min_value=0,
+        max_value=total_steps - 1,
+        value=st.session_state[step_key],
+        key=f"{key_prefix}_slider_widget",
+        on_change=on_slider_change,
+        help="Drag to jump to any recorded timestep.",
+    )
+
+    st.caption("💡 Keyboard shortcuts: **← Left Arrow** (Step Back) | **→ Right Arrow** (Step Forward) | **Space** (Play/Pause)")
+
+    # Inject Keyboard Shortcuts JS Script
+    js_listener = f"""
+    <script>
+    (function() {{
+      const doc = window.parent.document;
+      if (doc._replay_key_listener_{key_prefix}) return;
+      doc._replay_key_listener_{key_prefix} = true;
+
+      doc.addEventListener('keydown', function(e) {{
+        const active = doc.activeElement;
+        if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {{
+          return;
+        }}
+
+        if (e.key === 'ArrowLeft') {{
+          const buttons = Array.from(doc.querySelectorAll('button'));
+          const btn = buttons.find(b => b.textContent.includes('◀ Step Back') || b.textContent.includes('Step Back'));
+          if (btn) {{
+            e.preventDefault();
+            btn.click();
+          }}
+        }} else if (e.key === 'ArrowRight') {{
+          const buttons = Array.from(doc.querySelectorAll('button'));
+          const btn = buttons.find(b => b.textContent.includes('Step Next ▶') || b.textContent.includes('Step Next'));
+          if (btn) {{
+            e.preventDefault();
+            btn.click();
+          }}
+        }} else if (e.key === ' ' || e.code === 'Space') {{
+          const buttons = Array.from(doc.querySelectorAll('button'));
+          const btn = buttons.find(b => b.textContent.includes('▶ Play') || b.textContent.includes('⏸ Pause'));
+          if (btn) {{
+            e.preventDefault();
+            btn.click();
+          }}
+        }}
+      }});
+    }})();
+    </script>
+    """
+    components.html(js_listener, height=0, width=0)
+
+    replay_status = st.empty()
+    replay_frame = st.empty()
+
+    def render_single_step(step_idx: int) -> None:
+        step_info = trajectory[step_idx]
+
+        if room_num in (1, 2, 3):
+            action_name = getattr(step_info.action, "value", str(step_info.action))
+            replay_status.info(
+                f"Timestep {step_idx + 1}/{total_steps} • "
+                f"Action `{action_name}` • Outcome `{getattr(step_info, 'outcome', 'normal')}` • "
+                f"Reward {step_info.reward:.3f} • Cumulative {step_info.cumulative_reward:.3f}"
+            )
+            replay_frame.markdown(
+                render_grid_html(
+                    environment,
+                    agent_state=step_info.next_state,
+                    policy=policy,
+                    values=values,
+                ),
+                unsafe_allow_html=True,
+            )
+        elif room_num == 4:
+            st_val = step_info.state
+            replay_status.info(
+                f"Step {step_info.timestep}/{total_steps} • "
+                f"State: (x={st_val[0]:.2f}, y={st_val[1]:.2f}, Vx={st_val[2]:.1f}, Vy={st_val[3]:.1f}) • "
+                f"Action: {step_info.action.name} • Step reward: {step_info.reward:.2f} • "
+                f"Cumulative reward: {step_info.cumulative_reward:.2f}"
+            )
+            trajectory_states = [s.state for s in trajectory[: step_idx + 1]] + [step_info.next_state]
+            replay_frame.markdown(
+                render_room4_html(
+                    environment,
+                    agent_state=step_info.next_state,
+                    trajectory=trajectory_states,
+                ),
+                unsafe_allow_html=True,
+            )
+        elif room_num == 5:
+            replay_status.info(
+                f"Step {step_info.timestep}/{total_steps} • Action: {step_info.action.name} • "
+                f"Reward: {step_info.reward:.2f} • Cumulative: {step_info.cumulative_reward:.2f} • "
+                f"Events: {', '.join(step_info.events)}"
+            )
+            replay_frame.markdown(
+                render_room5_html(environment, step_info.after_snapshot),
+                unsafe_allow_html=True,
+            )
+
+    if st.session_state[playing_key]:
+        if room_num == 4:
+            base_delay = 0.02
+        elif room_num == 5:
+            base_delay = 0.05
+        else:
+            base_delay = 0.2
+
+        delay = base_delay / float(playback_speed)
+        start_step = st.session_state[step_key]
+        for step_i in range(start_step, total_steps):
+            if not st.session_state[playing_key]:
+                break
+            st.session_state[step_key] = step_i
+            render_single_step(step_i)
+            if step_i < total_steps - 1:
+                time.sleep(delay)
+        st.session_state[playing_key] = False
+        replay_status.success(
+            "Replay complete." if getattr(selected_ep, "success", False) else "Replay complete — episode ended without reaching goal."
+        )
+    else:
+        render_single_step(st.session_state[step_key])
+
 
 
 def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
+
     p = room_prefix(room_num)
     room1_algo = st.session_state.get("room1_algorithm", "Policy Iteration")
     algo_names = {1: room1_algo, 2: "SARSA", 3: "Q-Learning"}
@@ -1140,6 +1373,16 @@ def render_training_page(room_num: int, requests: dict[str, bool]) -> None:
             y_label="Changed actions" if room_num == 1 else "Exploration epsilon",
         )
 
+    if hasattr(res, "training_episodes") and res.training_episodes:
+        render_episode_replay_visualizer(
+            env,
+            res.training_episodes,
+            f"{p}_tr_replay",
+            room_num,
+            policy=res.policy,
+            values=res.values,
+            title="Training Episodes Replay",
+        )
 
     if room_num == 1 and res.converged:
         st.markdown(
@@ -1214,70 +1457,16 @@ def render_test_page(room_num: int, run_requested: bool) -> None:
     st.subheader("Detailed Episode Results")
     st.dataframe(frame, hide_index=True, use_container_width=True)
 
-    st.subheader("Episode Replay & Animation")
-    selected_number = st.selectbox(
-        "Select episode to replay",
-        options=[episode.episode for episode in test_results],
-        key=f"{p}_replay_ep_select",
-        help="Choose which recorded test episode will be animated.",
+    render_episode_replay_visualizer(
+        env,
+        test_results,
+        f"{p}_te_replay",
+        room_num,
+        policy=res.policy,
+        values=res.values,
+        title="Test Episodes Replay & Animation",
     )
-    selected_episode = next(
-        episode for episode in test_results if episode.episode == selected_number
-    )
-    play_col, speed_col, info_col = st.columns([1, 1, 3])
-    with play_col:
-        play_requested = st.button(
-            "▶ Play replay",
-            type="primary",
-            use_container_width=True,
-            key=f"{p}_play_replay",
-            help="Automatically animates the episode from start to finish.",
-        )
-    with speed_col:
-        playback_speed = st.selectbox(
-            "Playback speed",
-            options=[0.5, 1.0, 2.0, 4.0],
-            index=1,
-            format_func=lambda value: f"{value:g}×",
-            key=f"{p}_replay_speed",
-            help="Base speed is 5 timesteps per second. The multiplier changes that rate.",
-        )
-    with info_col:
-        st.caption(
-            f"{len(selected_episode.trajectory)} recorded timesteps • "
-            f"{5 * playback_speed:g} steps/second"
-        )
 
-    replay_status = st.empty()
-    replay_grid = st.empty()
-    replay_status.info(f"Ready at start cell {state_label(env.start)}.")
-    replay_grid.markdown(
-        render_grid_html(env, agent_state=env.start, policy=res.policy, values=res.values),
-        unsafe_allow_html=True,
-    )
-    if play_requested:
-        delay = 1.0 / (5.0 * playback_speed)
-        for index, step in enumerate(selected_episode.trajectory, start=1):
-            replay_status.info(
-                f"Timestep {index}/{len(selected_episode.trajectory)} • "
-                f"action `{step.action.value}` • outcome `{step.outcome}` • "
-                f"reward {step.reward:.3f} • cumulative {step.cumulative_reward:.3f}"
-            )
-            replay_grid.markdown(
-                render_grid_html(
-                    env,
-                    agent_state=step.next_state,
-                    policy=res.policy,
-                    values=res.values,
-                ),
-                unsafe_allow_html=True,
-            )
-            time.sleep(delay)
-        replay_status.success(
-            "Replay complete — goal reached."
-            if selected_episode.success
-            else "Replay complete — episode ended without reaching the main goal."
-        )
 
 
 def render_models_page(room_num: int) -> None:
@@ -1325,6 +1514,7 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
 
     # Environment controls in sidebar
     defaults_walls = {1: DEFAULT_WALLS, 2: DEFAULT_ROOM2_WALLS, 3: DEFAULT_ROOM3_WALLS}
+    defaults_slippery = {1: DEFAULT_SLIPPERY, 2: DEFAULT_ROOM2_SLIPPERY, 3: {}}
     random_controls = st.session_state[f"{p}_random_controls"]
 
     prob_err = room_configuration_error(room_num)
@@ -1337,10 +1527,10 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
             "Reset grid to default",
             key=f"{p}_reset_grid",
             use_container_width=True,
-            help="Restores the room's original walls, start, goal, and removes ice and custom cell rewards.",
+            help="Restores the room's original walls, icy cells, start, goal, and removes custom cell rewards.",
         ):
             st.session_state[f"{p}_walls"] = set(defaults_walls[room_num])
-            st.session_state[f"{p}_slippery"] = {}
+            st.session_state[f"{p}_slippery"] = dict(defaults_slippery.get(room_num, {}))
             st.session_state[f"{p}_start"] = (0, 0)
             st.session_state[f"{p}_goal"] = (9, 9)
             st.session_state[f"{p}_terminal_states"] = {(9, 9)}
@@ -1659,11 +1849,11 @@ def render_room(room_num: int) -> None:
 
 
 # =====================================================================
-# ROOM 4 (DQN - FLAPPY BIRD) IMPLEMENTATION
+# ROOM 4 (PPO - FLAPPY BIRD) IMPLEMENTATION
 # =====================================================================
 
 ROOM4_CONTROL_HELP = {
-    "section": "Choose which Room 4 workspace to display: configure the environment, train DQN, test a trained network, or manage saved model files.",
+    "section": "Choose which Room 4 workspace to display: configure the environment, train PPO, test a trained network, or manage saved model files.",
     "pipe_count": "Sets the number of obstacles. Whenever this value changes, all pipes are redistributed at equal horizontal distances between 2m and 8m so the layout remains valid, including five pipes.",
     "pipe_x": "The horizontal center of this pipe in meters. Moving it changes where the agent must pass the obstacle; avoid overlapping another pipe or the goal zone.",
     "pipe_width": "The horizontal thickness of the pipe. A wider pipe occupies more travel distance and makes collision avoidance harder.",
@@ -1675,30 +1865,29 @@ ROOM4_CONTROL_HELP = {
     "pipe_reward": "One-time reward received when the agent crosses a pipe's horizontal center from left to right. Larger values emphasize obstacle completion.",
     "goal_reward": "Terminal reward received for reaching the goal zone. It should normally be large enough to outweigh accumulated step penalties.",
     "collision_reward": "Terminal penalty applied after hitting a wall, floor, ceiling, or pipe. More negative values teach stronger collision avoidance.",
-    "alpha": "The optimizer learning rate. Higher values change network weights faster but can make learning unstable; lower values are steadier but slower.",
-    "gamma": "The discount factor for future rewards. Values near 1 make DQN plan farther ahead; lower values emphasize immediate rewards.",
-    "epsilon_start": "Initial probability of choosing a random action instead of the network's best action. A high value promotes broad exploration at the start.",
-    "epsilon_min": "Lowest exploration probability allowed during training. Keeping it above zero prevents the policy from becoming completely deterministic too early.",
-    "epsilon_decay": "Multiplier applied to epsilon after each episode. Values closer to 1 reduce exploration slowly; smaller values make the agent exploit its policy sooner.",
+    "alpha": "The optimizer learning rate for actor and critic networks. Higher values change network weights faster but can make learning unstable; lower values are steadier but slower.",
+    "gamma": "The discount factor for future rewards. Values near 1 make PPO plan farther ahead; lower values emphasize immediate rewards.",
+    "gae_lambda": "Generalized Advantage Estimation (GAE) smoothing parameter lambda. Balances bias vs variance in advantage estimations.",
+    "clip_epsilon": "PPO policy surrogate clipping threshold epsilon. Limits policy update ratio to prevent destructively large policy updates.",
+    "entropy_coefficient": "Coefficient for entropy bonus in PPO loss. Higher values encourage policy exploration by penalizing overly deterministic policies.",
+    "value_coefficient": "Multiplier for the mean-squared-error value loss relative to policy loss in the combined PPO objective.",
+    "update_epochs": "Number of optimization epochs over collected trajectory mini-batches in each PPO iteration update.",
+    "mini_batch_size": "Batch size used for gradient steps during PPO update epochs.",
     "episodes": "Number of complete training attempts. More episodes provide more experience but increase training time.",
     "max_timesteps": "Maximum actions permitted in one episode. The episode also stops earlier if the agent reaches the goal or collides.",
-    "buffer_capacity": "Maximum number of past transitions stored for experience replay. A larger buffer adds variety but uses more memory and can retain older behavior longer.",
-    "batch_size": "Number of replay-buffer transitions used in each gradient update. Larger batches produce smoother updates but require more computation and memory.",
-    "target_update": "Number of environment timesteps between copies of the policy network into the target network. Frequent updates adapt quickly; slower updates provide more stable targets.",
-    "train_frequency": "Perform one neural-network update every N environment timesteps. Higher values train less often and run faster, but may learn more slowly.",
-    "hidden_layers": "Number of fully connected hidden layers in the Q-network. More layers can represent more complex policies but require more data and computation.",
+    "hidden_layers": "Number of fully connected hidden layers in the shared network. More layers can represent more complex policies but require more data and computation.",
     "hidden_units": "Number of neurons in each hidden layer. More neurons increase model capacity as well as training cost and overfitting risk.",
-    "activation": "Non-linear function between hidden layers. ReLU is a reliable default; alternatives can change gradient flow and learning behavior.",
-    "seed": "Controls random network initialization, exploration actions, and replay sampling. Reusing the same seed helps reproduce an experiment.",
+    "activation": "Non-linear function between hidden layers. Tanh or ReLU are reliable defaults.",
+    "seed": "Controls random network initialization and trajectory sampling. Reusing the same seed helps reproduce an experiment.",
     "live_update": "Refresh live charts after this many episodes. Smaller values show finer progress but add UI overhead during training.",
-    "train": "Start a new DQN training run with the current environment, rewards, network architecture, and hyperparameters.",
+    "train": "Start a new PPO training run with the current environment, rewards, network architecture, and hyperparameters.",
     "reset": "Remove the trained Room 4 model and its stored test results from this browser session. Environment settings are kept.",
-    "test_episodes": "Number of evaluation episodes run with greedy actions and no exploration. More episodes give a more reliable performance estimate.",
+    "test_episodes": "Number of evaluation episodes run with deterministic greedy policy actions.",
     "test_timesteps": "Maximum actions allowed in each evaluation episode before it is marked unfinished.",
     "test_seed": "Seed reserved for reproducible evaluation. The current Room 4 environment is deterministic, but the setting keeps the test configuration explicit.",
-    "run_test": "Evaluate the trained network without exploratory random actions and record metrics, action choices, and replay trajectories.",
+    "run_test": "Evaluate the trained network without exploratory sampling and record metrics, action choices, and replay trajectories.",
     "download": "Download the trained network weights, environment, hyperparameters, metrics, duration, and action counts as a JSON artifact.",
-    "upload": "Select a Room 4 DQN JSON artifact previously downloaded from this dashboard.",
+    "upload": "Select a Room 4 PPO JSON artifact previously downloaded from this dashboard.",
     "load": "Validate the selected artifact and restore its environment, network weights, configuration, and training results.",
 }
 ROOM4_REPLAY_BASE_STEP_SECONDS = 0.02
@@ -1757,7 +1946,7 @@ def build_room4_environment() -> Room4Environment:
 
 
 def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
-    st.sidebar.title("Room 4 Controls (DQN)")
+    st.sidebar.title("Room 4 Controls (PPO)")
     section = st.sidebar.radio(
         "Control section",
         options=["Environment", "Training", "Testing", "Models"],
@@ -1849,42 +2038,40 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
 
     elif section == "Training":
         controls = st.session_state.room4_training_controls
-        st.sidebar.subheader("DQN hyperparameters")
-        alpha = st.sidebar.number_input("Learning rate (α)", 0.00001, 0.1, float(controls["alpha"]), format="%.5f", key="r4_alpha", help=ROOM4_CONTROL_HELP["alpha"])
-        gamma = st.sidebar.number_input("Discount factor (γ)", 0.0, 0.999, float(controls["gamma"]), format="%.3f", key="r4_gamma", help=ROOM4_CONTROL_HELP["gamma"])
-        eps_start = st.sidebar.number_input("Epsilon start", 0.0, 1.0, float(controls["epsilon_start"]), format="%.2f", key="r4_eps_start", help=ROOM4_CONTROL_HELP["epsilon_start"])
-        eps_min = st.sidebar.number_input("Epsilon minimum", 0.0, 1.0, float(controls["epsilon_min"]), format="%.3f", key="r4_eps_min", help=ROOM4_CONTROL_HELP["epsilon_min"])
-        eps_decay = st.sidebar.number_input("Epsilon decay", 0.8, 1.0, float(controls["epsilon_decay"]), format="%.4f", key="r4_eps_decay", help=ROOM4_CONTROL_HELP["epsilon_decay"])
-        episodes = st.sidebar.number_input("Episodes", 1, 5000, int(controls["episodes"]), key="r4_episodes", help=ROOM4_CONTROL_HELP["episodes"])
-        max_steps = st.sidebar.number_input("Maximum timesteps", 50, 2000, int(controls["max_timesteps"]), key="r4_max_steps", help=ROOM4_CONTROL_HELP["max_timesteps"])
-        buf_cap = st.sidebar.number_input("Replay buffer capacity", 100, 100000, int(controls["buffer_capacity"]), key="r4_buf_cap", help=ROOM4_CONTROL_HELP["buffer_capacity"])
-        batch_size = st.sidebar.number_input("Batch size", 8, 512, int(controls["batch_size"]), key="r4_batch_size", help=ROOM4_CONTROL_HELP["batch_size"])
-        target_freq = st.sidebar.number_input("Target network update frequency", 10, 1000, int(controls["target_update_freq"]), key="r4_target_freq", help=ROOM4_CONTROL_HELP["target_update"])
-        train_freq = st.sidebar.number_input("Training step frequency", 1, 10, int(controls.get("train_freq", 2)), key="r4_train_freq", help=ROOM4_CONTROL_HELP["train_frequency"])
+        st.sidebar.subheader("PPO hyperparameters")
+        alpha = st.sidebar.number_input("Learning rate (α)", 0.00001, 0.1, float(controls.get("alpha", 0.0003)), format="%.5f", key="r4_alpha", help=ROOM4_CONTROL_HELP["alpha"])
+        gamma = st.sidebar.number_input("Discount factor (γ)", 0.0, 0.999, float(controls.get("gamma", 0.99)), format="%.3f", key="r4_gamma", help=ROOM4_CONTROL_HELP["gamma"])
+        gae_lambda = st.sidebar.number_input("GAE lambda (λ)", 0.0, 1.0, float(controls.get("gae_lambda", 0.95)), format="%.3f", key="r4_gae_lambda", help=ROOM4_CONTROL_HELP["gae_lambda"])
+        clip_eps = st.sidebar.number_input("Clipping epsilon (ε)", 0.01, 0.5, float(controls.get("clip_epsilon", 0.2)), format="%.2f", key="r4_clip_eps", help=ROOM4_CONTROL_HELP["clip_epsilon"])
+        ent_coef = st.sidebar.number_input("Entropy coefficient", 0.0, 0.5, float(controls.get("entropy_coefficient", 0.01)), format="%.4f", key="r4_ent_coef", help=ROOM4_CONTROL_HELP["entropy_coefficient"])
+        val_coef = st.sidebar.number_input("Value loss coefficient", 0.0, 2.0, float(controls.get("value_coefficient", 0.5)), format="%.2f", key="r4_val_coef", help=ROOM4_CONTROL_HELP["value_coefficient"])
+        update_epochs = st.sidebar.number_input("PPO update epochs", 1, 20, int(controls.get("update_epochs", 4)), key="r4_update_epochs", help=ROOM4_CONTROL_HELP["update_epochs"])
+        mini_batch = st.sidebar.number_input("Mini-batch size", 8, 512, int(controls.get("mini_batch_size", 64)), key="r4_mini_batch", help=ROOM4_CONTROL_HELP["mini_batch_size"])
+        episodes = st.sidebar.number_input("Episodes", 1, 5000, int(controls.get("episodes", 300)), key="r4_episodes", help=ROOM4_CONTROL_HELP["episodes"])
+        max_steps = st.sidebar.number_input("Maximum timesteps", 50, 2000, int(controls.get("max_timesteps", 500)), key="r4_max_steps", help=ROOM4_CONTROL_HELP["max_timesteps"])
 
         st.sidebar.subheader("Neural network architecture")
         h_layers = st.sidebar.slider("Hidden layer count", 1, 4, int(controls.get("hidden_layers", 2)), key="r4_h_layers", help=ROOM4_CONTROL_HELP["hidden_layers"])
-        h_units = st.sidebar.select_slider("Neurons per hidden layer", options=[16, 32, 64, 128, 256], value=int(controls.get("hidden_units", 32)), key="r4_h_units", help=ROOM4_CONTROL_HELP["hidden_units"])
-        activation_opts = ["ReLU", "LeakyReLU", "Tanh", "ELU", "SiLU"]
-        current_act = controls.get("activation_fn", "ReLU")
+        h_units = st.sidebar.select_slider("Neurons per hidden layer", options=[16, 32, 64, 128, 256], value=int(controls.get("hidden_units", 64)), key="r4_h_units", help=ROOM4_CONTROL_HELP["hidden_units"])
+        activation_opts = ["Tanh", "ReLU", "LeakyReLU", "ELU", "SiLU"]
+        current_act = controls.get("activation_fn", "Tanh")
         act_idx = activation_opts.index(current_act) if current_act in activation_opts else 0
         act_fn = st.sidebar.selectbox("Activation function", options=activation_opts, index=act_idx, key="r4_activation_fn", help=ROOM4_CONTROL_HELP["activation"])
 
-        seed = st.sidebar.number_input("Random seed", 0, value=int(controls["seed"]), key="r4_seed", help=ROOM4_CONTROL_HELP["seed"])
-        live_update = st.sidebar.number_input("Update charts every N episodes", 1, 100, int(controls["live_update_every"]), key="r4_live_update", help=ROOM4_CONTROL_HELP["live_update"])
+        seed = st.sidebar.number_input("Random seed", 0, value=int(controls.get("seed", 42)), key="r4_seed", help=ROOM4_CONTROL_HELP["seed"])
+        live_update = st.sidebar.number_input("Update charts every N episodes", 1, 100, int(controls.get("live_update_every", 10)), key="r4_live_update", help=ROOM4_CONTROL_HELP["live_update"])
 
         st.session_state.room4_training_controls = {
             "alpha": float(alpha),
             "gamma": float(gamma),
-            "epsilon_start": float(eps_start),
-            "epsilon_min": float(eps_min),
-            "epsilon_decay": float(eps_decay),
+            "gae_lambda": float(gae_lambda),
+            "clip_epsilon": float(clip_eps),
+            "entropy_coefficient": float(ent_coef),
+            "value_coefficient": float(val_coef),
+            "update_epochs": int(update_epochs),
+            "mini_batch_size": int(mini_batch),
             "episodes": int(episodes),
             "max_timesteps": int(max_steps),
-            "buffer_capacity": int(buf_cap),
-            "batch_size": int(batch_size),
-            "target_update_freq": int(target_freq),
-            "train_freq": int(train_freq),
             "hidden_layers": int(h_layers),
             "hidden_units": int(h_units),
             "activation_fn": str(act_fn),
@@ -1892,7 +2079,7 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
             "live_update_every": int(live_update),
         }
 
-        requests["train"] = st.sidebar.button("Train DQN agent", icon=":material/play_arrow:", type="primary", width="stretch", key="r4_train_btn", help=ROOM4_CONTROL_HELP["train"])
+        requests["train"] = st.sidebar.button("Train PPO agent", icon=":material/play_arrow:", type="primary", width="stretch", key="r4_train_btn", help=ROOM4_CONTROL_HELP["train"])
         requests["reset"] = st.sidebar.button("Reset trained model", icon=":material/restart_alt:", width="stretch", key="r4_reset_btn", help=ROOM4_CONTROL_HELP["reset"])
 
     elif section == "Testing":
@@ -1919,7 +2106,7 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
             st.sidebar.download_button(
                 "Download Room 4 model (JSON)",
                 data=art,
-                file_name="room4_dqn_model.json",
+                file_name="room4_ppo_model.json",
                 mime="application/json",
                 icon=":material/download:",
                 width="stretch",
@@ -1940,7 +2127,7 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
                 st.session_state.room4_pipe_count_v2 = len(env_l.config.pipes)
                 _sync_room4_pipe_widget_state(list(env_l.config.pipes), overwrite=True)
                 st.session_state.room4_reward_values = dict(env_l.config.rewards)
-                st.sidebar.success("Room 4 DQN model loaded successfully!")
+                st.sidebar.success("Room 4 PPO model loaded successfully!")
                 st.rerun()
 
     return section, requests, run_test
@@ -1949,7 +2136,7 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
 def render_room4() -> None:
     section, requests, run_test = render_room4_controls()
 
-    st.markdown('<div class="room-header"><h2>🐤 Room 4: Continuous Flappy Bird (DQN Algorithm)</h2></div>', unsafe_allow_html=True)
+    st.markdown('<div class="room-header"><h2>🐤 Room 4: Continuous Flappy Bird (PPO Algorithm)</h2></div>', unsafe_allow_html=True)
 
     if section == "Environment":
         env = build_room4_environment()
@@ -1984,24 +2171,21 @@ def render_room4() -> None:
             ctrls = st.session_state.room4_training_controls
 
             hidden_dims = tuple([ctrls["hidden_units"]] * ctrls["hidden_layers"])
-            config = DQNConfig(
+            config = PPOConfig(
                 alpha=ctrls["alpha"],
                 gamma=ctrls["gamma"],
-                epsilon_start=ctrls["epsilon_start"],
-                epsilon_min=ctrls["epsilon_min"],
-                epsilon_decay=ctrls["epsilon_decay"],
+                gae_lambda=ctrls["gae_lambda"],
+                clip_epsilon=ctrls["clip_epsilon"],
+                entropy_coefficient=ctrls["entropy_coefficient"],
+                value_coefficient=ctrls["value_coefficient"],
+                update_epochs=ctrls["update_epochs"],
+                mini_batch_size=ctrls["mini_batch_size"],
                 episodes=ctrls["episodes"],
                 max_timesteps=ctrls["max_timesteps"],
-                buffer_capacity=ctrls["buffer_capacity"],
-                batch_size=ctrls["batch_size"],
-                target_update_freq=ctrls["target_update_freq"],
-                train_freq=ctrls.get("train_freq", 2),
                 hidden_dims=hidden_dims,
-                activation_fn=ctrls.get("activation_fn", "ReLU"),
+                activation_fn=ctrls.get("activation_fn", "Tanh"),
                 seed=ctrls["seed"],
             )
-
-
 
             status_placeholder = st.empty()
             st.subheader("Live training metrics")
@@ -2009,13 +2193,13 @@ def render_room4() -> None:
             with c1:
                 st.caption("**Total reward per episode**")
                 slot_reward = st.empty()
-                st.caption("**Epsilon exploration decay**")
-                slot_eps = st.empty()
+                st.caption("**Entropy**")
+                slot_entropy = st.empty()
             with c2:
-                st.caption("**Training loss (Smooth L1)**")
-                slot_loss = st.empty()
-                st.caption("**Mean Q-value**")
-                slot_q = st.empty()
+                st.caption("**Policy loss**")
+                slot_ploss = st.empty()
+                st.caption("**Value loss**")
+                slot_vloss = st.empty()
 
             live_update_freq = ctrls["live_update_every"]
             live_rows: list[dict] = []
@@ -2025,23 +2209,23 @@ def render_room4() -> None:
                 if metric.episode % live_update_freq == 0 or metric.episode == config.episodes:
                     status_placeholder.info(
                         f"Training episode {metric.episode}/{config.episodes} • "
-                        f"Reward: {metric.total_reward:.2f} • Epsilon: {metric.epsilon:.3f} • Loss: {metric.loss:.4f}"
+                        f"Reward: {metric.total_reward:.2f} • Policy Loss: {metric.policy_loss:.4f} • Value Loss: {metric.value_loss:.4f}"
                     )
                     df_live = pd.DataFrame(live_rows)
                     slot_reward.line_chart(df_live.set_index("episode")[["total_reward"]], x_label="Episode", y_label="Total reward")
-                    slot_loss.line_chart(df_live.set_index("episode")[["loss"]], x_label="Episode", y_label="Loss")
-                    slot_eps.line_chart(df_live.set_index("episode")[["epsilon"]], x_label="Episode", y_label="Epsilon")
-                    slot_q.line_chart(df_live.set_index("episode")[["mean_q_value"]], x_label="Episode", y_label="Mean Q")
+                    slot_ploss.line_chart(df_live.set_index("episode")[["policy_loss"]], x_label="Episode", y_label="Policy loss")
+                    slot_vloss.line_chart(df_live.set_index("episode")[["value_loss"]], x_label="Episode", y_label="Value loss")
+                    slot_entropy.line_chart(df_live.set_index("episode")[["entropy"]], x_label="Episode", y_label="Entropy")
 
-            with st.spinner("Training DQN agent..."):
-                result = run_dqn(env, config, callback=live_callback)
+            with st.spinner("Training PPO agent..."):
+                result = run_ppo(env, config, callback=live_callback)
 
             st.session_state.room4_result = result
             st.session_state.room4_result_environment = env
             st.session_state.room4_algorithm_config = config
             st.session_state.room4_test_results = None
             duration_label = _format_training_duration(result.training_duration_seconds)
-            status_placeholder.success(f"DQN training complete in {duration_label}.")
+            status_placeholder.success(f"PPO training complete in {duration_label}.")
 
             summary_cols = st.columns(3)
             summary_cols[0].metric("Training duration", duration_label)
@@ -2076,13 +2260,16 @@ def render_room4() -> None:
             with c1:
                 st.caption("**Total reward per episode**")
                 st.line_chart(df.set_index("episode")[["total_reward"]], x_label="Episode", y_label="Total reward")
-                st.caption("**Epsilon exploration decay**")
-                st.line_chart(df.set_index("episode")[["epsilon"]], x_label="Episode", y_label="Epsilon")
+                st.caption("**Entropy**")
+                if "entropy" in df.columns:
+                    st.line_chart(df.set_index("episode")[["entropy"]], x_label="Episode", y_label="Entropy")
             with c2:
-                st.caption("**Training loss (Smooth L1)**")
-                st.line_chart(df.set_index("episode")[["loss"]], x_label="Episode", y_label="Loss")
-                st.caption("**Mean Q-value**")
-                st.line_chart(df.set_index("episode")[["mean_q_value"]], x_label="Episode", y_label="Mean Q")
+                st.caption("**Policy loss**")
+                if "policy_loss" in df.columns:
+                    st.line_chart(df.set_index("episode")[["policy_loss"]], x_label="Episode", y_label="Policy loss")
+                st.caption("**Value loss**")
+                if "value_loss" in df.columns:
+                    st.line_chart(df.set_index("episode")[["value_loss"]], x_label="Episode", y_label="Value loss")
 
             st.subheader("Training action distribution")
             st.bar_chart(
@@ -2094,9 +2281,17 @@ def render_room4() -> None:
             )
 
             st.write(f"**Episodes run:** {res.episodes_run} | **Goal reached in late training:** {'Yes ✅' if res.converged else 'No ❌'}")
+            if hasattr(res, "training_episodes") and res.training_episodes:
+                env_cur = st.session_state.room4_result_environment or build_room4_environment()
+                render_episode_replay_visualizer(
+                    env_cur,
+                    res.training_episodes,
+                    "room4_tr_replay",
+                    4,
+                    title="Training Episodes Replay",
+                )
         elif not requests["train"]:
-            st.info("Click '▶ Train DQN Agent' in the left sidebar to start training.")
-
+            st.info("Click '▶ Train PPO Agent' in the left sidebar to start training.")
 
     elif section == "Testing":
         if run_test:
@@ -2104,7 +2299,7 @@ def render_room4() -> None:
             env = st.session_state.room4_result_environment
             if res and env:
                 t_ctrls = st.session_state.room4_test_controls
-                test_results = evaluate_room4_dqn(
+                test_results = evaluate_room4_ppo(
                     environment=env,
                     policy_net=res.policy_net,
                     episodes=t_ctrls["episodes"],
@@ -2144,69 +2339,16 @@ def render_room4() -> None:
                 y_label="Number of selections",
             )
 
-            st.subheader("Episode replay visualizer")
-            selected_ep_idx = st.selectbox("Select episode to replay", options=list(range(len(test_res))), format_func=lambda i: f"Episode {test_res[i].episode} (Success: {test_res[i].success}, Reward: {test_res[i].total_reward:.2f})")
-            ep_data = test_res[selected_ep_idx]
-
-            if ep_data.trajectory:
-                replay_controls = st.columns([1, 2], vertical_alignment="bottom")
-                with replay_controls[0]:
-                    play_replay = st.button(
-                        "Play replay",
-                        icon=":material/play_arrow:",
-                        type="primary",
-                        width="stretch",
-                        key=f"room4_play_replay_{selected_ep_idx}",
-                        help="Play every recorded timestep in order. At 1× speed, one step is shown every 0.02 seconds.",
-                    )
-                with replay_controls[1]:
-                    replay_speed = st.select_slider(
-                        "Playback speed",
-                        options=[0.5, 1.0, 2.0, 4.0],
-                        value=1.0,
-                        format_func=lambda value: f"{value:g}×",
-                        key=f"room4_replay_speed_{selected_ep_idx}",
-                        help="Controls replay speed. The 1× baseline is one timestep every 0.02 seconds; 2× uses 0.01 seconds and 0.5× uses 0.04 seconds.",
-                    )
-                st.caption("1× playback = one timestep every 0.02 seconds (50 steps per second).")
-
-                replay_status = st.empty()
-                replay_frame = st.empty()
-
-                def show_room4_replay_step(step_index: int) -> None:
-                    step_info = ep_data.trajectory[step_index]
-                    replay_status.info(
-                        f"Step {step_info.timestep}/{len(ep_data.trajectory)} • "
-                        f"State: (x={step_info.state[0]:.2f}, y={step_info.state[1]:.2f}, "
-                        f"Vx={step_info.state[2]:.1f}, Vy={step_info.state[3]:.1f}) • "
-                        f"Action: {step_info.action.name} • Step reward: {step_info.reward:.2f} • "
-                        f"Cumulative reward: {step_info.cumulative_reward:.2f}"
-                    )
-                    trajectory_states = [
-                        step.state for step in ep_data.trajectory[: step_index + 1]
-                    ]
-                    replay_frame.markdown(
-                        render_room4_html(
-                            env,
-                            agent_state=step_info.next_state,
-                            trajectory=trajectory_states + [step_info.next_state],
-                        ),
-                        unsafe_allow_html=True,
-                    )
-
-                show_room4_replay_step(0)
-                if play_replay:
-                    frame_delay = ROOM4_REPLAY_BASE_STEP_SECONDS / float(replay_speed)
-                    for replay_step_index in range(len(ep_data.trajectory)):
-                        show_room4_replay_step(replay_step_index)
-                        if replay_step_index < len(ep_data.trajectory) - 1:
-                            time.sleep(frame_delay)
-                    replay_status.success(
-                        f"Replay complete • {len(ep_data.trajectory)} timesteps • "
-                        f"Total reward: {ep_data.total_reward:.2f}"
-                    )
+            render_episode_replay_visualizer(
+                env,
+                test_res,
+                "room4_te_replay",
+                4,
+                title="Test Episodes Replay & Animation",
+            )
         else:
             st.info("Run a test from the left sidebar to view test metrics and replay trajectories.")
+
 
     else:  # Models
         res = st.session_state.room4_result
@@ -2214,7 +2356,7 @@ def render_room4() -> None:
         st.subheader("Model & Network Information")
         if res and config:
             st.json({
-                "Algorithm": "DQN (Deep Q-Network)",
+                "Algorithm": "PPO (Proximal Policy Optimization)",
                 "Input State Dimension": 4,
                 "Output Action Dimension": 9,
                 "Hidden Architecture": list(config.hidden_dims),
@@ -2456,6 +2598,17 @@ def _render_room5_training_summary(result: Any) -> None:
     st.subheader("Training action distribution")
     st.bar_chart(_room5_action_dataframe(result.action_counts), x="Action", y="Selections", x_label="Action", y_label="Number of selections")
 
+    if hasattr(result, "training_episodes") and result.training_episodes:
+        environment = st.session_state.room5_result_environment or build_room5_environment()
+        render_episode_replay_visualizer(
+            environment,
+            result.training_episodes,
+            "room5_tr_replay",
+            5,
+            title="Training Episodes Replay",
+        )
+
+
 
 def render_room5() -> None:
     section, requests, run_test = render_room5_controls()
@@ -2578,44 +2731,16 @@ def render_room5() -> None:
                 st.bar_chart(_room5_action_dataframe(action_counts), x="Action", y="Selections", x_label="Action", y_label="Number of selections")
             st.dataframe(table, width="stretch")
 
-            st.subheader("Episode replay visualizer")
-            selected_index = st.selectbox(
-                "Select episode to replay", range(len(results)),
-                format_func=lambda index: f"Episode {results[index].episode} (Success: {results[index].success}, Reward: {results[index].total_reward:.2f})",
-                key="r5_replay_episode",
+            render_episode_replay_visualizer(
+                environment,
+                results,
+                "room5_te_replay",
+                5,
+                title="Test Episodes Replay & Animation",
             )
-            episode = results[selected_index]
-            if episode.trajectory:
-                controls_row = st.columns([1, 2], vertical_alignment="bottom")
-                with controls_row[0]:
-                    play = st.button("Play replay", icon=":material/play_arrow:", type="primary", width="stretch", key=f"r5_play_{selected_index}", help="Play the recorded driving decisions automatically from start to finish.")
-                with controls_row[1]:
-                    speed = st.select_slider("Playback speed", [0.5, 1.0, 2.0, 4.0], value=1.0, format_func=lambda value: f"{value:g}×", key=f"r5_speed_{selected_index}", help="At 1×, one recorded decision is displayed every 0.05 seconds.")
-                st.caption("1× playback = one driving decision every 0.05 seconds.")
-                replay_status = st.empty()
-                replay_frame = st.empty()
-
-                def show_room5_step(index: int) -> None:
-                    step = episode.trajectory[index]
-                    replay_status.info(
-                        f"Step {step.timestep}/{len(episode.trajectory)} • Action: {step.action.name} • "
-                        f"Reward: {step.reward:.2f} • Cumulative: {step.cumulative_reward:.2f} • "
-                        f"Events: {', '.join(step.events)}"
-                    )
-                    replay_frame.markdown(render_room5_html(environment, step.after_snapshot), unsafe_allow_html=True)
-
-                show_room5_step(0)
-                if play:
-                    for index in range(len(episode.trajectory)):
-                        show_room5_step(index)
-                        if index < len(episode.trajectory) - 1:
-                            time.sleep(0.05 / float(speed))
-                    replay_status.success(
-                        f"Replay complete • {episode.timesteps} timesteps • "
-                        f"Overtakes: {episode.overtakes} • Total reward: {episode.total_reward:.2f}"
-                    )
         else:
             st.info("Train a Room 5 model and run a test to view evaluation metrics and replay trajectories.")
+
 
     else:
         result = st.session_state.room5_result

@@ -38,6 +38,9 @@ class TrainingMetric:
     policy_changes: int
 
 
+from .evaluation import EpisodeResult, evaluate_policy
+
+
 @dataclass
 class PolicyIterationResult:
     values: dict[State, float]
@@ -46,6 +49,7 @@ class PolicyIterationResult:
     converged: bool = False
     policy_iterations: int = 0
     evaluation_sweeps: int = 0
+    training_episodes: list[EpisodeResult] = field(default_factory=list)
 
 
 MetricCallback = Callable[
@@ -159,6 +163,7 @@ def run_policy_iteration(
             callback(improvement_metric, values.copy(), policy.copy())
 
         if policy_changes == 0 and last_delta < config.theta:
+            sample_eps = evaluate_policy(environment, policy, episodes=5, max_timesteps=100, seed=config.seed)
             return PolicyIterationResult(
                 values=values,
                 policy=policy,
@@ -166,8 +171,10 @@ def run_policy_iteration(
                 converged=True,
                 policy_iterations=policy_iteration,
                 evaluation_sweeps=total_evaluation_sweeps,
+                training_episodes=sample_eps,
             )
 
+    sample_eps = evaluate_policy(environment, policy, episodes=5, max_timesteps=100, seed=config.seed)
     return PolicyIterationResult(
         values=values,
         policy=policy,
@@ -175,4 +182,6 @@ def run_policy_iteration(
         converged=False,
         policy_iterations=config.max_policy_iterations,
         evaluation_sweeps=total_evaluation_sweeps,
+        training_episodes=sample_eps,
     )
+

@@ -91,12 +91,21 @@ class PPOTrainingMetric:
     total_reward: float
     timesteps: int
     success: bool
-    overtakes: int
-    collision: bool
-    policy_loss: float
-    value_loss: float
-    entropy: float
-    mean_value: float
+    overtakes: int = 0
+    pipes_passed: int = 0
+    collision: bool = False
+    policy_loss: float = 0.0
+    value_loss: float = 0.0
+    entropy: float = 0.0
+    mean_value: float = 0.0
+
+
+from .evaluation import (
+    Room4EpisodeResult,
+    Room4EpisodeStep,
+    Room5EpisodeResult,
+    Room5EpisodeStep,
+)
 
 
 @dataclass
@@ -108,27 +117,45 @@ class PPOResult:
     training_duration_seconds: float = 0.0
     action_counts: dict[str, int] = field(default_factory=dict)
     config: PPOConfig = field(default_factory=PPOConfig)
+    training_episodes: list[Any] = field(default_factory=list)
+
 
 
 PPOCallback = Callable[[PPOTrainingMetric, ActorCriticNetwork], None]
 
 
-def observation_tensor(observation: RoadObservation) -> torch.Tensor:
-    return torch.tensor(observation, dtype=torch.float32)
+def observation_tensor(observation: Any) -> torch.Tensor:
+    if isinstance(observation, torch.Tensor):
+        t = observation.float()
+    else:
+        t = torch.tensor(observation, dtype=torch.float32)
+
+    # Normalize 4D state for Room 4 (x, y, vx, vy)
+    if t.ndim == 1 and t.shape[0] == 4:
+        norm = t.clone()
+        norm[0] = (norm[0] / 5.0) - 1.0
+        norm[1] = (norm[1] / 5.0) - 1.0
+        norm[2] = norm[2] / 3.0
+        norm[3] = norm[3] / 3.0
+        return norm
+    return t
 
 
 def select_ppo_action(
     policy_net: ActorCriticNetwork,
-    observation: RoadObservation,
+    observation: Any,
     *,
     deterministic: bool,
-) -> Action5:
+    action_enum: Any = None,
+) -> Any:
     with torch.no_grad():
         logits, _ = policy_net(observation_tensor(observation).unsqueeze(0))
         if deterministic:
             action_index = int(torch.argmax(logits, dim=1).item())
         else:
             action_index = int(Categorical(logits=logits).sample().item())
+    if action_enum is not None:
+        return action_enum(action_index)
     return Action5(action_index)
 
 
@@ -155,7 +182,7 @@ def _generalized_advantages(
 
 
 def run_ppo(
-    environment: Room5Environment,
+    environment: Any,
     config: PPOConfig,
     callback: PPOCallback | None = None,
 ) -> PPOResult:
@@ -163,19 +190,34 @@ def run_ppo(
     torch.manual_seed(config.seed)
     np_rng = np.random.default_rng(config.seed)
 
+    obs_dim = getattr(environment, "observation_size", OBSERVATION_SIZE)
+    act_dim = getattr(environment, "action_size", len(Action5))
+    action_enum = getattr(environment, "action_enum", None)
+    if action_enum is None:
+        if act_dim == 9:
+            from .room4 import Action4
+            action_enum = Action4
+        else:
+            action_enum = Action5
+
     policy_net = ActorCriticNetwork(
-        observation_dim=environment.observation_size,
-        action_dim=environment.action_size,
+        observation_dim=obs_dim,
+        action_dim=act_dim,
         hidden_dims=config.hidden_dims,
         activation_fn=config.activation_fn,
     )
     optimizer = optim.Adam(policy_net.parameters(), lr=config.alpha)
 
     metrics: list[PPOTrainingMetric] = []
-    action_counts = {action.name: 0 for action in Action5}
+    training_episodes: list[Any] = []
+    action_counts = {action.name: 0 for action in action_enum}
 
     for episode in range(1, config.episodes + 1):
-        observation = environment.reset(config.seed + episode)
+        try:
+            observation = environment.reset(config.seed + episode)
+        except TypeError:
+            observation = environment.reset()
+
         states: list[torch.Tensor] = []
         actions: list[int] = []
         old_log_probs: list[float] = []
@@ -184,10 +226,14 @@ def run_ppo(
         values: list[float] = []
         total_reward = 0.0
         overtakes = 0
+        pipes_passed = 0
         collision = False
         success = False
 
-        for _ in range(config.max_timesteps):
+        is_room5 = hasattr(environment, "snapshot")
+        trajectory: list[Any] = []
+
+        for timestep in range(1, config.max_timesteps + 1):
             state_tensor = observation_tensor(observation)
             with torch.no_grad():
                 logits, value = policy_net(state_tensor.unsqueeze(0))
@@ -195,24 +241,86 @@ def run_ppo(
                 action_tensor = distribution.sample()
                 log_probability = distribution.log_prob(action_tensor)
 
-            action = Action5(int(action_tensor.item()))
+            action_idx = int(action_tensor.item())
+            action = action_enum(action_idx)
             action_counts[action.name] += 1
-            transition = environment.step(action)
+
+            if is_room5:
+                before_snap = environment.snapshot()
+                transition = environment.step(action)
+                total_reward += transition.reward
+                overtakes += transition.events.count("overtake")
+                collision = collision or "collision" in transition.events
+                success = success or "goal_reached" in transition.events
+                trajectory.append(
+                    Room5EpisodeStep(
+                        timestep=timestep,
+                        state=observation,
+                        action=action,
+                        next_state=transition.next_state,
+                        reward=float(transition.reward),
+                        cumulative_reward=float(total_reward),
+                        events=transition.events,
+                        before_snapshot=before_snap,
+                        after_snapshot=transition.snapshot,
+                    )
+                )
+            else:
+                prev_obs = observation
+                try:
+                    transition = environment.step(action)
+                except TypeError:
+                    transition = environment.step(observation, action)
+                total_reward += transition.reward
+                pipes_passed += transition.events.count("pipe_passed")
+                collision = collision or "collision" in transition.events
+                success = success or "goal_reached" in transition.events
+                trajectory.append(
+                    Room4EpisodeStep(
+                        timestep=timestep,
+                        state=prev_obs,
+                        action=action,
+                        next_state=transition.next_state,
+                        reward=float(transition.reward),
+                        cumulative_reward=float(total_reward),
+                        events=transition.events,
+                    )
+                )
 
             states.append(state_tensor)
-            actions.append(int(action))
+            actions.append(action_idx)
             old_log_probs.append(float(log_probability.item()))
             rewards.append(float(transition.reward))
             dones.append(bool(transition.done))
             values.append(float(value.item()))
 
-            total_reward += transition.reward
-            overtakes += transition.events.count("overtake")
-            collision = collision or "collision" in transition.events
-            success = success or "goal_reached" in transition.events
             observation = transition.next_state
             if transition.done:
                 break
+
+        if is_room5:
+            training_episodes.append(
+                Room5EpisodeResult(
+                    episode=episode,
+                    success=success,
+                    timesteps=len(trajectory),
+                    total_reward=float(total_reward),
+                    overtakes=overtakes,
+                    collision=collision,
+                    trajectory=trajectory,
+                )
+            )
+        else:
+            training_episodes.append(
+                Room4EpisodeResult(
+                    episode=episode,
+                    success=success,
+                    timesteps=len(trajectory),
+                    total_reward=float(total_reward),
+                    pipes_passed=pipes_passed,
+                    trajectory=trajectory,
+                )
+            )
 
         with torch.no_grad():
             _, bootstrap_value = policy_net(
@@ -283,6 +391,7 @@ def run_ppo(
             timesteps=rollout_size,
             success=success,
             overtakes=overtakes,
+            pipes_passed=pipes_passed,
             collision=collision,
             policy_loss=float(np.mean(policy_losses)) if policy_losses else 0.0,
             value_loss=float(np.mean(value_losses)) if value_losses else 0.0,
@@ -302,4 +411,6 @@ def run_ppo(
         training_duration_seconds=float(perf_counter() - started_at),
         action_counts=action_counts,
         config=config,
+        training_episodes=training_episodes,
     )
+

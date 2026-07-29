@@ -7,6 +7,7 @@ from .evaluation import (
     Room4EpisodeStep,
     evaluate_policy,
     evaluate_room4_dqn,
+    evaluate_room4_ppo,
     Room5EpisodeResult,
     Room5EpisodeStep,
     evaluate_room5_ppo,
@@ -24,6 +25,8 @@ from .q_learning import (
     run_q_learning,
 )
 from .room1 import (
+    DEFAULT_SLIPPERY,
+    DEFAULT_WALLS,
     Action,
     Room1Config,
     Room1Environment,
@@ -32,6 +35,8 @@ from .room1 import (
     generate_random_slippery_cells,
 )
 from .room2 import (
+    DEFAULT_ROOM2_SLIPPERY,
+    DEFAULT_ROOM2_WALLS,
     Room2Config,
     Room2Environment,
     default_room2_config,
@@ -88,6 +93,10 @@ __all__ = [
     "Action4",
     "Action5",
     "ActorCriticNetwork",
+    "DEFAULT_ROOM2_SLIPPERY",
+    "DEFAULT_ROOM2_WALLS",
+    "DEFAULT_SLIPPERY",
+    "DEFAULT_WALLS",
     "DQNConfig",
     "DQNNetwork",
     "DQNResult",
@@ -132,6 +141,7 @@ __all__ = [
     "default_room3_config",
     "evaluate_policy",
     "evaluate_room4_dqn",
+    "evaluate_room4_ppo",
     "evaluate_room5_ppo",
     "generate_random_slippery_cells",
     "distribute_pipes_evenly",
