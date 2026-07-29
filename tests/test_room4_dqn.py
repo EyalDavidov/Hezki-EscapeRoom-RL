@@ -81,5 +81,18 @@ class Room4DQNTests(unittest.TestCase):
         self.assertEqual(len(loaded_result.metrics), 5)
 
 
+    def test_dqn_activation_functions(self) -> None:
+        for act in ["ReLU", "LeakyReLU", "Tanh", "ELU", "SiLU"]:
+            config_algo = DQNConfig(episodes=2, max_timesteps=10, batch_size=8, buffer_capacity=100, activation_fn=act, seed=42)
+            env = Room4Environment(Room4Config())
+            result = run_dqn(env, config_algo)
+            self.assertEqual(result.config.activation_fn, act)
+            self.assertEqual(len(result.metrics), 2)
+
+        with self.assertRaises(ValueError):
+            DQNConfig(activation_fn="InvalidActivation")
+
+
 if __name__ == "__main__":
     unittest.main()
+

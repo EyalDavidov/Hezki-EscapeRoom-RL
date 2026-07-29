@@ -457,7 +457,9 @@ def export_room4_artifact(
             "buffer_capacity": int(algorithm_config.buffer_capacity),
             "batch_size": int(algorithm_config.batch_size),
             "target_update_freq": int(algorithm_config.target_update_freq),
+            "train_freq": int(getattr(algorithm_config, "train_freq", 2)),
             "hidden_dims": list(algorithm_config.hidden_dims),
+            "activation_fn": str(getattr(algorithm_config, "activation_fn", "ReLU")),
             "seed": int(algorithm_config.seed),
         },
         "result": {
@@ -516,12 +518,20 @@ def import_room4_artifact(
         buffer_capacity=int(algo_data["buffer_capacity"]),
         batch_size=int(algo_data["batch_size"]),
         target_update_freq=int(algo_data["target_update_freq"]),
+        train_freq=int(algo_data.get("train_freq", 2)),
         hidden_dims=tuple(algo_data["hidden_dims"]),
+        activation_fn=str(algo_data.get("activation_fn", "ReLU")),
         seed=int(algo_data["seed"]),
     )
 
     result_data = payload["result"]
-    policy_net = DQNNetwork(state_dim=4, action_dim=9, hidden_dims=algorithm_config.hidden_dims)
+    policy_net = DQNNetwork(
+        state_dim=4,
+        action_dim=9,
+        hidden_dims=algorithm_config.hidden_dims,
+        activation_fn=algorithm_config.activation_fn,
+    )
+
 
     state_dict = {
         k: torch.tensor(v, dtype=torch.float32)

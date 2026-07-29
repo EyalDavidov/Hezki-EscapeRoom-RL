@@ -12,6 +12,15 @@ import torch.optim as optim
 from .room4 import Action4, Room4Environment, State4, ACTION_VELOCITIES
 
 
+ACTIVATION_MAP: dict[str, type[nn.Module]] = {
+    "ReLU": nn.ReLU,
+    "LeakyReLU": nn.LeakyReLU,
+    "Tanh": nn.Tanh,
+    "ELU": nn.ELU,
+    "SiLU": nn.SiLU,
+}
+
+
 @dataclass(frozen=True)
 class DQNConfig:
     alpha: float = 0.001
@@ -24,7 +33,9 @@ class DQNConfig:
     buffer_capacity: int = 10000
     batch_size: int = 64
     target_update_freq: int = 100
+    train_freq: int = 2
     hidden_dims: tuple[int, ...] = (32, 32)
+    activation_fn: str = "ReLU"
     seed: int = 42
 
     def __post_init__(self) -> None:
@@ -40,24 +51,36 @@ class DQNConfig:
             raise ValueError("episodes and max_timesteps must be positive.")
         if self.buffer_capacity < self.batch_size:
             raise ValueError("buffer_capacity must be at least batch_size.")
+        if self.train_freq <= 0:
+            raise ValueError("train_freq must be positive.")
+        if self.activation_fn not in ACTIVATION_MAP:
+            raise ValueError(f"Unknown activation_fn '{self.activation_fn}'. Choice must be one of {sorted(ACTIVATION_MAP)}.")
 
 
 class DQNNetwork(nn.Module):
     """Multi-Layer Perceptron Q-Network mapping 4D state to 9 Q-values."""
 
-    def __init__(self, state_dim: int = 4, action_dim: int = 9, hidden_dims: tuple[int, ...] = (32, 32)):
+    def __init__(
+        self,
+        state_dim: int = 4,
+        action_dim: int = 9,
+        hidden_dims: tuple[int, ...] = (32, 32),
+        activation_fn: str = "ReLU",
+    ):
         super().__init__()
+        act_cls = ACTIVATION_MAP.get(activation_fn, nn.ReLU)
         layers: list[nn.Module] = []
         in_dim = state_dim
         for h_dim in hidden_dims:
             layers.append(nn.Linear(in_dim, h_dim))
-            layers.append(nn.ReLU())
+            layers.append(act_cls())
             in_dim = h_dim
         layers.append(nn.Linear(in_dim, action_dim))
         self.network = nn.Sequential(*layers)
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         return self.network(state)
+
 
 
 class ReplayBuffer:
@@ -138,7 +161,6 @@ def normalize_state(state: State4) -> torch.Tensor:
     return normalize_batch(t).squeeze(0)
 
 
-
 def select_dqn_action(
     policy_net: DQNNetwork,
     state: State4,
@@ -165,10 +187,11 @@ def run_dqn(
     torch.manual_seed(config.seed)
     np_rng = np.random.default_rng(config.seed)
 
-    policy_net = DQNNetwork(state_dim=4, action_dim=9, hidden_dims=config.hidden_dims)
-    target_net = DQNNetwork(state_dim=4, action_dim=9, hidden_dims=config.hidden_dims)
+    policy_net = DQNNetwork(state_dim=4, action_dim=9, hidden_dims=config.hidden_dims, activation_fn=config.activation_fn)
+    target_net = DQNNetwork(state_dim=4, action_dim=9, hidden_dims=config.hidden_dims, activation_fn=config.activation_fn)
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
+
 
     optimizer = optim.Adam(policy_net.parameters(), lr=config.alpha)
     criterion = nn.SmoothL1Loss()
@@ -199,8 +222,8 @@ def run_dqn(
 
             replay_buffer.push(state, int(action), reward, next_state, done)
 
-            # Fast Vectorized Training Step
-            if len(replay_buffer) >= config.batch_size:
+            # Optimizing training frequency (e.g. step update every train_freq steps)
+            if len(replay_buffer) >= config.batch_size and total_steps % config.train_freq == 0:
                 b_states, b_actions, b_rewards, b_next_states, b_dones = replay_buffer.sample(config.batch_size)
 
                 # Vectorized state normalization

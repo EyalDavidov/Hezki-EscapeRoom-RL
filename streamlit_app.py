@@ -1675,10 +1675,15 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
         buf_cap = st.sidebar.number_input("Buffer capacity", 100, 100000, int(controls["buffer_capacity"]), key="r4_buf_cap")
         batch_size = st.sidebar.number_input("Batch size", 8, 512, int(controls["batch_size"]), key="r4_batch_size")
         target_freq = st.sidebar.number_input("Target update freq", 10, 1000, int(controls["target_update_freq"]), key="r4_target_freq")
+        train_freq = st.sidebar.number_input("Train step freq", 1, 10, int(controls.get("train_freq", 2)), key="r4_train_freq", help="Perform network update every N steps (higher = faster training).")
 
         st.sidebar.subheader("Neural Network Architecture")
         h_layers = st.sidebar.slider("Hidden layers count", 1, 4, int(controls.get("hidden_layers", 2)), key="r4_h_layers")
         h_units = st.sidebar.select_slider("Perceptrons per hidden layer", options=[16, 32, 64, 128, 256], value=int(controls.get("hidden_units", 32)), key="r4_h_units")
+        activation_opts = ["ReLU", "LeakyReLU", "Tanh", "ELU", "SiLU"]
+        current_act = controls.get("activation_fn", "ReLU")
+        act_idx = activation_opts.index(current_act) if current_act in activation_opts else 0
+        act_fn = st.sidebar.selectbox("Activation function", options=activation_opts, index=act_idx, key="r4_activation_fn", help="Non-linear activation function used between hidden layers.")
 
         seed = st.sidebar.number_input("Seed", 0, value=int(controls["seed"]), key="r4_seed")
         live_update = st.sidebar.number_input("Update charts every N episodes", 1, 100, int(controls["live_update_every"]), key="r4_live_update")
@@ -1694,8 +1699,10 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
             "buffer_capacity": int(buf_cap),
             "batch_size": int(batch_size),
             "target_update_freq": int(target_freq),
+            "train_freq": int(train_freq),
             "hidden_layers": int(h_layers),
             "hidden_units": int(h_units),
+            "activation_fn": str(act_fn),
             "seed": int(seed),
             "live_update_every": int(live_update),
         }
@@ -1798,9 +1805,13 @@ def render_room4() -> None:
                 buffer_capacity=ctrls["buffer_capacity"],
                 batch_size=ctrls["batch_size"],
                 target_update_freq=ctrls["target_update_freq"],
+                train_freq=ctrls.get("train_freq", 2),
                 hidden_dims=hidden_dims,
+                activation_fn=ctrls.get("activation_fn", "ReLU"),
                 seed=ctrls["seed"],
             )
+
+
 
             status_placeholder = st.empty()
             st.subheader("Live Training Metrics")
@@ -1919,11 +1930,13 @@ def render_room4() -> None:
                 "Input State Dimension": 4,
                 "Output Action Dimension": 9,
                 "Hidden Architecture": list(config.hidden_dims),
+                "Activation Function": getattr(config, "activation_fn", "ReLU"),
                 "Learning Rate": config.alpha,
                 "Discount Factor": config.gamma,
                 "Episodes Trained": res.episodes_run,
                 "Converged": res.converged,
             })
+
         else:
             st.info("No trained model currently in memory.")
 
