@@ -180,3 +180,7 @@
 ## סדר ההעמקה המומלץ
 
 בשלב הבא מומלץ להתחיל ממשימה 0, לסגור את ההגדרות המשותפות ואת קריטריוני הקבלה, ואז לעבור למשימה 1 ולתכנן לעומק את החדר הראשון בלבד. לאחר מימוש ובדיקה של כל משימה, מעדכנים את סטטוס המסמך וממשיכים למשימה הבאה.
+
+## Extension — Room 5
+
+Room 5 adds a one-way, 2–6 lane driving environment with configurable forward vision and traffic. A PPO actor-critic agent learns to change lanes, avoid collisions, overtake slower same-direction vehicles, and complete a target road distance. The room includes full environment and reward controls, PPO hyperparameters, live training charts, test metrics, automatic replay, and portable JSON model artifacts. Its detailed definition is stored in `docs/tasks/task_8/ROOM_5_SPECIFICATION.md`.

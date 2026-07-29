@@ -26,8 +26,14 @@ from escape_room_rl.artifacts import (  # noqa: E402
     import_room3_artifact,
     export_room4_artifact,
     import_room4_artifact,
+    export_room5_artifact,
+    import_room5_artifact,
 )
-from escape_room_rl.evaluation import evaluate_policy, evaluate_room4_dqn  # noqa: E402
+from escape_room_rl.evaluation import (  # noqa: E402
+    evaluate_policy,
+    evaluate_room4_dqn,
+    evaluate_room5_ppo,
+)
 from escape_room_rl.policy_iteration import (  # noqa: E402
     PolicyIterationConfig,
     run_policy_iteration,
@@ -50,6 +56,7 @@ from escape_room_rl.dqn import (  # noqa: E402
     DQNNetwork,
     run_dqn,
 )
+from escape_room_rl.ppo import PPOConfig, run_ppo  # noqa: E402
 from escape_room_rl.room1 import (  # noqa: E402
     DEFAULT_REWARDS,
     DEFAULT_WALLS,
@@ -73,17 +80,29 @@ from escape_room_rl.room3 import (  # noqa: E402
     Room3Environment,
 )
 from escape_room_rl.room4 import (  # noqa: E402
+    Action4,
     DEFAULT_ROOM4_PIPES,
     DEFAULT_ROOM4_REWARDS,
     PipeObstacle,
     Room4Config,
     Room4Environment,
+    distribute_pipes_evenly,
+)
+from escape_room_rl.room5 import (  # noqa: E402
+    Action5,
+    DEFAULT_ROOM5_REWARDS,
+    Room5Config,
+    Room5Environment,
 )
 from escape_room_rl.display_formatting import (  # noqa: E402
     format_reward_label,
     reward_sign_class,
 )
-from escape_room_rl.visualization import render_grid_html, render_room4_html  # noqa: E402
+from escape_room_rl.visualization import (  # noqa: E402
+    render_grid_html,
+    render_room4_html,
+    render_room5_html,
+)
 
 
 
@@ -392,6 +411,7 @@ def initialize_state() -> None:
             PipeObstacle(x=5.0, width=0.6, gap_start=2.0, gap_size=3.0),
             PipeObstacle(x=7.5, width=0.6, gap_start=4.5, gap_size=3.0),
         ],
+        "room4_pipe_count_v2": 3,
         "room4_reward_values": dict(DEFAULT_ROOM4_REWARDS),
         "room4_result": None,
         "room4_result_environment": None,
@@ -416,6 +436,44 @@ def initialize_state() -> None:
         "room4_test_controls": {
             "episodes": 50,
             "max_timesteps": 500,
+            "seed": 123,
+        },
+        # Room 5 (PPO - one-way traffic avoidance)
+        "room5_environment_controls": {
+            "lane_count": 4,
+            "vision_distance": 120.0,
+            "road_length": 600.0,
+            "ego_speed": 30.0,
+            "traffic_speed_min": 12.0,
+            "traffic_speed_max": 24.0,
+            "traffic_count": 10,
+            "seed": 42,
+        },
+        "room5_reward_values": dict(DEFAULT_ROOM5_REWARDS),
+        "room5_result": None,
+        "room5_result_environment": None,
+        "room5_algorithm_config": None,
+        "room5_test_results": None,
+        "room5_training_controls": {
+            "alpha": 0.0003,
+            "gamma": 0.99,
+            "gae_lambda": 0.95,
+            "clip_epsilon": 0.2,
+            "entropy_coefficient": 0.01,
+            "value_coefficient": 0.5,
+            "update_epochs": 4,
+            "mini_batch_size": 64,
+            "episodes": 300,
+            "max_timesteps": 300,
+            "hidden_layers": 2,
+            "hidden_units": 64,
+            "activation_fn": "Tanh",
+            "seed": 42,
+            "live_update_every": 10,
+        },
+        "room5_test_controls": {
+            "episodes": 50,
+            "max_timesteps": 300,
             "seed": 123,
         },
     }
@@ -459,7 +517,7 @@ def test_dataframe(results) -> pd.DataFrame:
 
 
 def render_room_navigation() -> str:
-    rooms = ["Room 1", "Room 2", "Room 3", "Room 4"]
+    rooms = ["Room 1", "Room 2", "Room 3", "Room 4", "Room 5"]
     active_room = st.session_state.active_room
     with st.container(
         key="main_top_nav",
@@ -1604,6 +1662,92 @@ def render_room(room_num: int) -> None:
 # ROOM 4 (DQN - FLAPPY BIRD) IMPLEMENTATION
 # =====================================================================
 
+ROOM4_CONTROL_HELP = {
+    "section": "Choose which Room 4 workspace to display: configure the environment, train DQN, test a trained network, or manage saved model files.",
+    "pipe_count": "Sets the number of obstacles. Whenever this value changes, all pipes are redistributed at equal horizontal distances between 2m and 8m so the layout remains valid, including five pipes.",
+    "pipe_x": "The horizontal center of this pipe in meters. Moving it changes where the agent must pass the obstacle; avoid overlapping another pipe or the goal zone.",
+    "pipe_width": "The horizontal thickness of the pipe. A wider pipe occupies more travel distance and makes collision avoidance harder.",
+    "gap_start": "The height, in meters, where the safe opening begins. It controls the lower edge of the gap and therefore the vertical route the agent must learn.",
+    "gap_size": "The vertical size of the safe opening. Smaller gaps make the task harder; the gap must remain fully inside the 10m room.",
+    "step_reward": "Reward added on every timestep. A small negative value encourages shorter solutions; a stronger penalty may make the agent overly cautious about exploring.",
+    "progress_reward": "Reward multiplier for positive horizontal progress. The reward is multiplied by the distance moved to the right during that timestep.",
+    "backward_reward": "Reward added whenever the agent moves left, including diagonal left actions. Use a negative value to penalize backward movement, or zero to ignore it.",
+    "pipe_reward": "One-time reward received when the agent crosses a pipe's horizontal center from left to right. Larger values emphasize obstacle completion.",
+    "goal_reward": "Terminal reward received for reaching the goal zone. It should normally be large enough to outweigh accumulated step penalties.",
+    "collision_reward": "Terminal penalty applied after hitting a wall, floor, ceiling, or pipe. More negative values teach stronger collision avoidance.",
+    "alpha": "The optimizer learning rate. Higher values change network weights faster but can make learning unstable; lower values are steadier but slower.",
+    "gamma": "The discount factor for future rewards. Values near 1 make DQN plan farther ahead; lower values emphasize immediate rewards.",
+    "epsilon_start": "Initial probability of choosing a random action instead of the network's best action. A high value promotes broad exploration at the start.",
+    "epsilon_min": "Lowest exploration probability allowed during training. Keeping it above zero prevents the policy from becoming completely deterministic too early.",
+    "epsilon_decay": "Multiplier applied to epsilon after each episode. Values closer to 1 reduce exploration slowly; smaller values make the agent exploit its policy sooner.",
+    "episodes": "Number of complete training attempts. More episodes provide more experience but increase training time.",
+    "max_timesteps": "Maximum actions permitted in one episode. The episode also stops earlier if the agent reaches the goal or collides.",
+    "buffer_capacity": "Maximum number of past transitions stored for experience replay. A larger buffer adds variety but uses more memory and can retain older behavior longer.",
+    "batch_size": "Number of replay-buffer transitions used in each gradient update. Larger batches produce smoother updates but require more computation and memory.",
+    "target_update": "Number of environment timesteps between copies of the policy network into the target network. Frequent updates adapt quickly; slower updates provide more stable targets.",
+    "train_frequency": "Perform one neural-network update every N environment timesteps. Higher values train less often and run faster, but may learn more slowly.",
+    "hidden_layers": "Number of fully connected hidden layers in the Q-network. More layers can represent more complex policies but require more data and computation.",
+    "hidden_units": "Number of neurons in each hidden layer. More neurons increase model capacity as well as training cost and overfitting risk.",
+    "activation": "Non-linear function between hidden layers. ReLU is a reliable default; alternatives can change gradient flow and learning behavior.",
+    "seed": "Controls random network initialization, exploration actions, and replay sampling. Reusing the same seed helps reproduce an experiment.",
+    "live_update": "Refresh live charts after this many episodes. Smaller values show finer progress but add UI overhead during training.",
+    "train": "Start a new DQN training run with the current environment, rewards, network architecture, and hyperparameters.",
+    "reset": "Remove the trained Room 4 model and its stored test results from this browser session. Environment settings are kept.",
+    "test_episodes": "Number of evaluation episodes run with greedy actions and no exploration. More episodes give a more reliable performance estimate.",
+    "test_timesteps": "Maximum actions allowed in each evaluation episode before it is marked unfinished.",
+    "test_seed": "Seed reserved for reproducible evaluation. The current Room 4 environment is deterministic, but the setting keeps the test configuration explicit.",
+    "run_test": "Evaluate the trained network without exploratory random actions and record metrics, action choices, and replay trajectories.",
+    "download": "Download the trained network weights, environment, hyperparameters, metrics, duration, and action counts as a JSON artifact.",
+    "upload": "Select a Room 4 DQN JSON artifact previously downloaded from this dashboard.",
+    "load": "Validate the selected artifact and restore its environment, network weights, configuration, and training results.",
+}
+ROOM4_REPLAY_BASE_STEP_SECONDS = 0.02
+
+
+def _sync_room4_pipe_widget_state(
+    pipes: list[PipeObstacle], *, overwrite: bool = False
+) -> None:
+    for idx, pipe in enumerate(pipes):
+        values = {
+            f"p_{idx}_x": float(pipe.x),
+            f"p_{idx}_w": float(pipe.width),
+            f"p_{idx}_gs": float(pipe.gap_start),
+            f"p_{idx}_gz": float(pipe.gap_size),
+        }
+        for key, value in values.items():
+            if overwrite or key not in st.session_state:
+                st.session_state[key] = value
+
+
+def _redistribute_room4_pipes() -> None:
+    pipe_count = int(st.session_state.room4_pipe_count_v2)
+    pipes = distribute_pipes_evenly(list(st.session_state.room4_pipes), pipe_count)
+    st.session_state.room4_pipes = pipes
+    _sync_room4_pipe_widget_state(pipes, overwrite=True)
+    for idx in range(pipe_count, 5):
+        for suffix in ("x", "w", "gs", "gz"):
+            st.session_state.pop(f"p_{idx}_{suffix}", None)
+    st.session_state.room4_result = None
+    st.session_state.room4_result_environment = None
+    st.session_state.room4_algorithm_config = None
+    st.session_state.room4_test_results = None
+
+
+def _room4_action_dataframe(action_counts: dict[str, int]) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "Action": [action.name for action in Action4],
+            "Selections": [int(action_counts.get(action.name, 0)) for action in Action4],
+        }
+    )
+
+
+def _format_training_duration(seconds: float) -> str:
+    if seconds < 60.0:
+        return f"{seconds:.2f} seconds"
+    minutes, remaining_seconds = divmod(seconds, 60.0)
+    return f"{int(minutes)}m {remaining_seconds:.1f}s"
+
 def build_room4_environment() -> Room4Environment:
     config = Room4Config(
         pipes=list(st.session_state.room4_pipes),
@@ -1618,45 +1762,86 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
         "Control section",
         options=["Environment", "Training", "Testing", "Models"],
         key="room4_control_section",
+        help=ROOM4_CONTROL_HELP["section"],
     )
 
     requests: dict[str, bool] = {"train": False, "reset": False}
     run_test = False
 
     if section == "Environment":
-        st.sidebar.subheader("Flappy Bird Pipe Obstacles")
-        pipe_count = st.sidebar.slider("Number of Pipes", 1, 5, len(st.session_state.room4_pipes), key="room4_pipe_count")
+        st.sidebar.subheader("Flappy Bird pipe obstacles")
+        current_pipes = list(st.session_state.room4_pipes)
+        if int(st.session_state.get("room4_pipe_count_v2", len(current_pipes))) != len(
+            current_pipes
+        ):
+            st.session_state.room4_pipe_count_v2 = len(current_pipes)
+        st.sidebar.slider(
+            "Number of pipes",
+            1,
+            5,
+            value=len(current_pipes),
+            key="room4_pipe_count_v2",
+            on_change=_redistribute_room4_pipes,
+            help=ROOM4_CONTROL_HELP["pipe_count"],
+        )
 
         current_pipes = list(st.session_state.room4_pipes)
-        while len(current_pipes) < pipe_count:
-            idx = len(current_pipes)
-            current_pipes.append(PipeObstacle(x=2.0 + idx * 2.0, width=0.6, gap_start=3.0, gap_size=3.0))
-        current_pipes = current_pipes[:pipe_count]
+        _sync_room4_pipe_widget_state(current_pipes)
 
         updated_pipes = []
         for idx, pipe in enumerate(current_pipes):
-            with st.sidebar.expander(f"Pipe {idx + 1} Configuration", expanded=False):
-                px = st.number_input(f"Pipe {idx + 1} X Position (m)", 0.5, 9.0, float(pipe.x), 0.1, key=f"p_{idx}_x")
-                pw = st.number_input(f"Pipe {idx + 1} Width (m)", 0.2, 2.0, float(pipe.width), 0.1, key=f"p_{idx}_w")
-                g_start = st.number_input(f"Pipe {idx + 1} Gap Start Y (m)", 0.5, 8.0, float(pipe.gap_start), 0.1, key=f"p_{idx}_gs")
-                g_size = st.number_input(f"Pipe {idx + 1} Gap Size (m)", 1.0, 6.0, float(pipe.gap_size), 0.1, key=f"p_{idx}_gz")
+            with st.sidebar.expander(f"Pipe {idx + 1} configuration", expanded=False):
+                px = st.number_input(
+                    f"Pipe {idx + 1} X position (m)",
+                    0.5,
+                    9.0,
+                    step=0.1,
+                    key=f"p_{idx}_x",
+                    help=ROOM4_CONTROL_HELP["pipe_x"],
+                )
+                pw = st.number_input(
+                    f"Pipe {idx + 1} width (m)",
+                    0.2,
+                    2.0,
+                    step=0.1,
+                    key=f"p_{idx}_w",
+                    help=ROOM4_CONTROL_HELP["pipe_width"],
+                )
+                g_start = st.number_input(
+                    f"Pipe {idx + 1} gap start Y (m)",
+                    0.5,
+                    8.0,
+                    step=0.1,
+                    key=f"p_{idx}_gs",
+                    help=ROOM4_CONTROL_HELP["gap_start"],
+                )
+                g_size = st.number_input(
+                    f"Pipe {idx + 1} gap size (m)",
+                    1.0,
+                    6.0,
+                    step=0.1,
+                    key=f"p_{idx}_gz",
+                    help=ROOM4_CONTROL_HELP["gap_size"],
+                )
                 updated_pipes.append(PipeObstacle(x=px, width=pw, gap_start=g_start, gap_size=g_size))
 
         if updated_pipes != st.session_state.room4_pipes:
             st.session_state.room4_pipes = updated_pipes
             st.session_state.room4_result = None
 
-        st.sidebar.subheader("Reward Structure")
+        st.sidebar.subheader("Reward structure")
         rewards = dict(st.session_state.room4_reward_values)
-        r_step = st.sidebar.slider("Step penalty", -1.0, 0.0, float(rewards.get("step", -0.05)), 0.01, key="r4_r_step")
-        r_prog = st.sidebar.slider("Progress reward", 0.0, 2.0, float(rewards.get("progress", 0.5)), 0.1, key="r4_r_prog")
-        r_pipe = st.sidebar.slider("Pipe passed reward", 0.0, 20.0, float(rewards.get("pipe_passed", 5.0)), 0.5, key="r4_r_pipe")
-        r_goal = st.sidebar.slider("Goal reward", 5.0, 50.0, float(rewards.get("goal_reached", 20.0)), 1.0, key="r4_r_goal")
-        r_coll = st.sidebar.slider("Collision penalty", -50.0, -1.0, float(rewards.get("collision", -20.0)), 1.0, key="r4_r_coll")
+        r_step = st.sidebar.slider("Step penalty", -1.0, 0.0, float(rewards.get("step", -0.05)), 0.01, key="r4_r_step", help=ROOM4_CONTROL_HELP["step_reward"])
+        r_prog = st.sidebar.slider("Progress reward", 0.0, 2.0, float(rewards.get("progress", 0.5)), 0.1, key="r4_r_prog", help=ROOM4_CONTROL_HELP["progress_reward"])
+        r_back = st.sidebar.slider("Backward movement reward", -10.0, 0.0, float(rewards.get("backward", 0.0)), 0.1, key="r4_r_back", help=ROOM4_CONTROL_HELP["backward_reward"])
+        r_pipe = st.sidebar.slider("Pipe passed reward", 0.0, 20.0, float(rewards.get("pipe_passed", 5.0)), 0.5, key="r4_r_pipe", help=ROOM4_CONTROL_HELP["pipe_reward"])
+        r_goal = st.sidebar.slider("Goal reward", 5.0, 50.0, float(rewards.get("goal_reached", 20.0)), 1.0, key="r4_r_goal", help=ROOM4_CONTROL_HELP["goal_reward"])
+        r_coll = st.sidebar.slider("Collision penalty", -50.0, -1.0, float(rewards.get("collision", -20.0)), 1.0, key="r4_r_coll", help=ROOM4_CONTROL_HELP["collision_reward"])
 
         st.session_state.room4_reward_values = {
             "step": float(r_step),
             "progress": float(r_prog),
+            "backward": float(r_back),
             "pipe_passed": float(r_pipe),
             "goal_reached": float(r_goal),
             "collision": float(r_coll),
@@ -1664,29 +1849,29 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
 
     elif section == "Training":
         controls = st.session_state.room4_training_controls
-        st.sidebar.subheader("DQN Hyperparameters")
-        alpha = st.sidebar.number_input("Learning rate (α)", 0.00001, 0.1, float(controls["alpha"]), format="%.5f", key="r4_alpha")
-        gamma = st.sidebar.number_input("Discount factor (γ)", 0.0, 0.999, float(controls["gamma"]), format="%.3f", key="r4_gamma")
-        eps_start = st.sidebar.number_input("Epsilon start", 0.0, 1.0, float(controls["epsilon_start"]), format="%.2f", key="r4_eps_start")
-        eps_min = st.sidebar.number_input("Epsilon min", 0.0, 1.0, float(controls["epsilon_min"]), format="%.3f", key="r4_eps_min")
-        eps_decay = st.sidebar.number_input("Epsilon decay", 0.8, 1.0, float(controls["epsilon_decay"]), format="%.4f", key="r4_eps_decay")
-        episodes = st.sidebar.number_input("Episodes", 1, 5000, int(controls["episodes"]), key="r4_episodes")
-        max_steps = st.sidebar.number_input("Max timesteps", 50, 2000, int(controls["max_timesteps"]), key="r4_max_steps")
-        buf_cap = st.sidebar.number_input("Buffer capacity", 100, 100000, int(controls["buffer_capacity"]), key="r4_buf_cap")
-        batch_size = st.sidebar.number_input("Batch size", 8, 512, int(controls["batch_size"]), key="r4_batch_size")
-        target_freq = st.sidebar.number_input("Target update freq", 10, 1000, int(controls["target_update_freq"]), key="r4_target_freq")
-        train_freq = st.sidebar.number_input("Train step freq", 1, 10, int(controls.get("train_freq", 2)), key="r4_train_freq", help="Perform network update every N steps (higher = faster training).")
+        st.sidebar.subheader("DQN hyperparameters")
+        alpha = st.sidebar.number_input("Learning rate (α)", 0.00001, 0.1, float(controls["alpha"]), format="%.5f", key="r4_alpha", help=ROOM4_CONTROL_HELP["alpha"])
+        gamma = st.sidebar.number_input("Discount factor (γ)", 0.0, 0.999, float(controls["gamma"]), format="%.3f", key="r4_gamma", help=ROOM4_CONTROL_HELP["gamma"])
+        eps_start = st.sidebar.number_input("Epsilon start", 0.0, 1.0, float(controls["epsilon_start"]), format="%.2f", key="r4_eps_start", help=ROOM4_CONTROL_HELP["epsilon_start"])
+        eps_min = st.sidebar.number_input("Epsilon minimum", 0.0, 1.0, float(controls["epsilon_min"]), format="%.3f", key="r4_eps_min", help=ROOM4_CONTROL_HELP["epsilon_min"])
+        eps_decay = st.sidebar.number_input("Epsilon decay", 0.8, 1.0, float(controls["epsilon_decay"]), format="%.4f", key="r4_eps_decay", help=ROOM4_CONTROL_HELP["epsilon_decay"])
+        episodes = st.sidebar.number_input("Episodes", 1, 5000, int(controls["episodes"]), key="r4_episodes", help=ROOM4_CONTROL_HELP["episodes"])
+        max_steps = st.sidebar.number_input("Maximum timesteps", 50, 2000, int(controls["max_timesteps"]), key="r4_max_steps", help=ROOM4_CONTROL_HELP["max_timesteps"])
+        buf_cap = st.sidebar.number_input("Replay buffer capacity", 100, 100000, int(controls["buffer_capacity"]), key="r4_buf_cap", help=ROOM4_CONTROL_HELP["buffer_capacity"])
+        batch_size = st.sidebar.number_input("Batch size", 8, 512, int(controls["batch_size"]), key="r4_batch_size", help=ROOM4_CONTROL_HELP["batch_size"])
+        target_freq = st.sidebar.number_input("Target network update frequency", 10, 1000, int(controls["target_update_freq"]), key="r4_target_freq", help=ROOM4_CONTROL_HELP["target_update"])
+        train_freq = st.sidebar.number_input("Training step frequency", 1, 10, int(controls.get("train_freq", 2)), key="r4_train_freq", help=ROOM4_CONTROL_HELP["train_frequency"])
 
-        st.sidebar.subheader("Neural Network Architecture")
-        h_layers = st.sidebar.slider("Hidden layers count", 1, 4, int(controls.get("hidden_layers", 2)), key="r4_h_layers")
-        h_units = st.sidebar.select_slider("Perceptrons per hidden layer", options=[16, 32, 64, 128, 256], value=int(controls.get("hidden_units", 32)), key="r4_h_units")
+        st.sidebar.subheader("Neural network architecture")
+        h_layers = st.sidebar.slider("Hidden layer count", 1, 4, int(controls.get("hidden_layers", 2)), key="r4_h_layers", help=ROOM4_CONTROL_HELP["hidden_layers"])
+        h_units = st.sidebar.select_slider("Neurons per hidden layer", options=[16, 32, 64, 128, 256], value=int(controls.get("hidden_units", 32)), key="r4_h_units", help=ROOM4_CONTROL_HELP["hidden_units"])
         activation_opts = ["ReLU", "LeakyReLU", "Tanh", "ELU", "SiLU"]
         current_act = controls.get("activation_fn", "ReLU")
         act_idx = activation_opts.index(current_act) if current_act in activation_opts else 0
-        act_fn = st.sidebar.selectbox("Activation function", options=activation_opts, index=act_idx, key="r4_activation_fn", help="Non-linear activation function used between hidden layers.")
+        act_fn = st.sidebar.selectbox("Activation function", options=activation_opts, index=act_idx, key="r4_activation_fn", help=ROOM4_CONTROL_HELP["activation"])
 
-        seed = st.sidebar.number_input("Seed", 0, value=int(controls["seed"]), key="r4_seed")
-        live_update = st.sidebar.number_input("Update charts every N episodes", 1, 100, int(controls["live_update_every"]), key="r4_live_update")
+        seed = st.sidebar.number_input("Random seed", 0, value=int(controls["seed"]), key="r4_seed", help=ROOM4_CONTROL_HELP["seed"])
+        live_update = st.sidebar.number_input("Update charts every N episodes", 1, 100, int(controls["live_update_every"]), key="r4_live_update", help=ROOM4_CONTROL_HELP["live_update"])
 
         st.session_state.room4_training_controls = {
             "alpha": float(alpha),
@@ -1707,20 +1892,21 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
             "live_update_every": int(live_update),
         }
 
-        requests["train"] = st.sidebar.button("▶ Train DQN Agent", type="primary", use_container_width=True, key="r4_train_btn")
-        requests["reset"] = st.sidebar.button("Reset trained model", use_container_width=True, key="r4_reset_btn")
+        requests["train"] = st.sidebar.button("Train DQN agent", icon=":material/play_arrow:", type="primary", width="stretch", key="r4_train_btn", help=ROOM4_CONTROL_HELP["train"])
+        requests["reset"] = st.sidebar.button("Reset trained model", icon=":material/restart_alt:", width="stretch", key="r4_reset_btn", help=ROOM4_CONTROL_HELP["reset"])
 
     elif section == "Testing":
         controls = st.session_state.room4_test_controls
         st.sidebar.subheader("Test configuration")
-        episodes = st.sidebar.number_input("Test episodes", 1, 1000, int(controls["episodes"]), key="r4_test_episodes")
-        max_steps = st.sidebar.number_input("Max timesteps per episode", 10, 5000, int(controls["max_timesteps"]), key="r4_test_max_steps")
-        seed = st.sidebar.number_input("Test seed", 0, value=int(controls["seed"]), key="r4_test_seed")
+        episodes = st.sidebar.number_input("Test episodes", 1, 1000, int(controls["episodes"]), key="r4_test_episodes", help=ROOM4_CONTROL_HELP["test_episodes"])
+        max_steps = st.sidebar.number_input("Maximum timesteps per episode", 10, 5000, int(controls["max_timesteps"]), key="r4_test_max_steps", help=ROOM4_CONTROL_HELP["test_timesteps"])
+        seed = st.sidebar.number_input("Test seed", 0, value=int(controls["seed"]), key="r4_test_seed", help=ROOM4_CONTROL_HELP["test_seed"])
 
         st.session_state.room4_test_controls = {"episodes": int(episodes), "max_timesteps": int(max_steps), "seed": int(seed)}
         run_test = st.sidebar.button(
-            "🧪 Run test", type="primary", use_container_width=True,
-            disabled=st.session_state.room4_result is None, key="r4_run_test_btn"
+            "Run test", icon=":material/science:", type="primary", width="stretch",
+            disabled=st.session_state.room4_result is None, key="r4_run_test_btn",
+            help=ROOM4_CONTROL_HELP["run_test"],
         )
 
     else:  # Models
@@ -1731,15 +1917,17 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
         if res and env and config:
             art = export_room4_artifact(env, config, res)
             st.sidebar.download_button(
-                "⬇ Download Room 4 model (JSON)",
+                "Download Room 4 model (JSON)",
                 data=art,
                 file_name="room4_dqn_model.json",
                 mime="application/json",
-                use_container_width=True,
+                icon=":material/download:",
+                width="stretch",
+                help=ROOM4_CONTROL_HELP["download"],
             )
 
-        uploaded = st.sidebar.file_uploader("Upload model JSON", type=["json"], key="r4_upload")
-        if uploaded is not None and st.sidebar.button("Load model", use_container_width=True, key="r4_load_btn"):
+        uploaded = st.sidebar.file_uploader("Upload model JSON", type=["json"], key="r4_upload", help=ROOM4_CONTROL_HELP["upload"])
+        if uploaded is not None and st.sidebar.button("Load model", icon=":material/upload_file:", width="stretch", key="r4_load_btn", help=ROOM4_CONTROL_HELP["load"]):
             try:
                 env_l, config_l, res_l = import_room4_artifact(uploaded.getvalue().decode("utf-8"))
             except Exception as exc:
@@ -1749,6 +1937,8 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
                 st.session_state.room4_algorithm_config = config_l
                 st.session_state.room4_result = res_l
                 st.session_state.room4_pipes = list(env_l.config.pipes)
+                st.session_state.room4_pipe_count_v2 = len(env_l.config.pipes)
+                _sync_room4_pipe_widget_state(list(env_l.config.pipes), overwrite=True)
                 st.session_state.room4_reward_values = dict(env_l.config.rewards)
                 st.sidebar.success("Room 4 DQN model loaded successfully!")
                 st.rerun()
@@ -1763,10 +1953,10 @@ def render_room4() -> None:
 
     if section == "Environment":
         env = build_room4_environment()
-        st.subheader("10m × 10m Continuous Flappy Bird Room Layout")
+        st.subheader("10m × 10m continuous Flappy Bird room layout")
         st.markdown(render_room4_html(env), unsafe_allow_html=True)
 
-        st.subheader("Custom Pipe Obstacles Overview")
+        st.subheader("Custom pipe obstacles overview")
         pipe_df = pd.DataFrame([
             {
                 "Pipe": idx + 1,
@@ -1778,7 +1968,7 @@ def render_room4() -> None:
             }
             for idx, pipe in enumerate(env.config.pipes)
         ])
-        st.dataframe(pipe_df, use_container_width=True)
+        st.dataframe(pipe_df, width="stretch")
 
     elif section == "Training":
         if requests["reset"]:
@@ -1814,17 +2004,17 @@ def render_room4() -> None:
 
 
             status_placeholder = st.empty()
-            st.subheader("Live Training Metrics")
+            st.subheader("Live training metrics")
             c1, c2 = st.columns(2)
             with c1:
-                st.caption("**Episode Total Reward**")
+                st.caption("**Total reward per episode**")
                 slot_reward = st.empty()
-                st.caption("**Epsilon Exploration Decay**")
+                st.caption("**Epsilon exploration decay**")
                 slot_eps = st.empty()
             with c2:
-                st.caption("**Training Loss (Smooth L1)**")
+                st.caption("**Training loss (Smooth L1)**")
                 slot_loss = st.empty()
-                st.caption("**Mean Q-Value**")
+                st.caption("**Mean Q-value**")
                 slot_q = st.empty()
 
             live_update_freq = ctrls["live_update_every"]
@@ -1834,40 +2024,76 @@ def render_room4() -> None:
                 live_rows.append(asdict(metric))
                 if metric.episode % live_update_freq == 0 or metric.episode == config.episodes:
                     status_placeholder.info(
-                        f"Training Episode {metric.episode}/{config.episodes} • "
+                        f"Training episode {metric.episode}/{config.episodes} • "
                         f"Reward: {metric.total_reward:.2f} • Epsilon: {metric.epsilon:.3f} • Loss: {metric.loss:.4f}"
                     )
                     df_live = pd.DataFrame(live_rows)
-                    slot_reward.line_chart(df_live.set_index("episode")[["total_reward"]], x_label="Episode", y_label="Total Reward")
+                    slot_reward.line_chart(df_live.set_index("episode")[["total_reward"]], x_label="Episode", y_label="Total reward")
                     slot_loss.line_chart(df_live.set_index("episode")[["loss"]], x_label="Episode", y_label="Loss")
                     slot_eps.line_chart(df_live.set_index("episode")[["epsilon"]], x_label="Episode", y_label="Epsilon")
                     slot_q.line_chart(df_live.set_index("episode")[["mean_q_value"]], x_label="Episode", y_label="Mean Q")
 
-            with st.spinner("Training DQN Agent..."):
+            with st.spinner("Training DQN agent..."):
                 result = run_dqn(env, config, callback=live_callback)
 
             st.session_state.room4_result = result
             st.session_state.room4_result_environment = env
             st.session_state.room4_algorithm_config = config
-            status_placeholder.success("DQN Training complete!")
+            st.session_state.room4_test_results = None
+            duration_label = _format_training_duration(result.training_duration_seconds)
+            status_placeholder.success(f"DQN training complete in {duration_label}.")
+
+            summary_cols = st.columns(3)
+            summary_cols[0].metric("Training duration", duration_label)
+            summary_cols[1].metric("Episodes completed", result.episodes_run)
+            summary_cols[2].metric("Actions selected", sum(result.action_counts.values()))
+            st.subheader("Training action distribution")
+            st.bar_chart(
+                _room4_action_dataframe(result.action_counts),
+                x="Action",
+                y="Selections",
+                x_label="Action",
+                y_label="Number of selections",
+            )
 
         res = st.session_state.room4_result
         if res and not requests["train"]:
             df = pd.DataFrame([asdict(m) for m in res.metrics])
-            st.subheader("Live Training Metrics")
+            summary_cols = st.columns(3)
+            summary_cols[0].metric(
+                "Training duration",
+                _format_training_duration(
+                    float(getattr(res, "training_duration_seconds", 0.0))
+                ),
+            )
+            summary_cols[1].metric("Episodes completed", res.episodes_run)
+            summary_cols[2].metric(
+                "Actions selected", sum(getattr(res, "action_counts", {}).values())
+            )
+
+            st.subheader("Training metrics")
             c1, c2 = st.columns(2)
             with c1:
-                st.caption("**Episode Total Reward**")
-                st.line_chart(df.set_index("episode")[["total_reward"]], x_label="Episode", y_label="Total Reward")
-                st.caption("**Epsilon Exploration Decay**")
+                st.caption("**Total reward per episode**")
+                st.line_chart(df.set_index("episode")[["total_reward"]], x_label="Episode", y_label="Total reward")
+                st.caption("**Epsilon exploration decay**")
                 st.line_chart(df.set_index("episode")[["epsilon"]], x_label="Episode", y_label="Epsilon")
             with c2:
-                st.caption("**Training Loss (Smooth L1)**")
+                st.caption("**Training loss (Smooth L1)**")
                 st.line_chart(df.set_index("episode")[["loss"]], x_label="Episode", y_label="Loss")
-                st.caption("**Mean Q-Value**")
+                st.caption("**Mean Q-value**")
                 st.line_chart(df.set_index("episode")[["mean_q_value"]], x_label="Episode", y_label="Mean Q")
 
-            st.write(f"**Episodes Run:** {res.episodes_run} | **Goal Reached in Late Training:** {'Yes ✅' if res.converged else 'No ❌'}")
+            st.subheader("Training action distribution")
+            st.bar_chart(
+                _room4_action_dataframe(getattr(res, "action_counts", {})),
+                x="Action",
+                y="Selections",
+                x_label="Action",
+                y_label="Number of selections",
+            )
+
+            st.write(f"**Episodes run:** {res.episodes_run} | **Goal reached in late training:** {'Yes ✅' if res.converged else 'No ❌'}")
         elif not requests["train"]:
             st.info("Click '▶ Train DQN Agent' in the left sidebar to start training.")
 
@@ -1890,7 +2116,7 @@ def render_room4() -> None:
         test_res = st.session_state.room4_test_results
         env = st.session_state.room4_result_environment
         if test_res and env:
-            st.subheader("Test Execution Summary")
+            st.subheader("Test execution summary")
             df_test = pd.DataFrame([
                 {
                     "Episode": ep.episode,
@@ -1902,21 +2128,83 @@ def render_room4() -> None:
                 for ep in test_res
             ])
             success_rate = (df_test["Success"].sum() / len(df_test)) * 100.0
-            st.metric("Test Success Rate", f"{success_rate:.1f}%")
-            st.dataframe(df_test, use_container_width=True)
+            st.metric("Test success rate", f"{success_rate:.1f}%")
+            st.dataframe(df_test, width="stretch")
 
-            st.subheader("Episode Replay Visualizer")
-            selected_ep_idx = st.selectbox("Select Episode to Replay", options=list(range(len(test_res))), format_func=lambda i: f"Episode {test_res[i].episode} (Success: {test_res[i].success}, Reward: {test_res[i].total_reward:.2f})")
+            test_action_counts = {action.name: 0 for action in Action4}
+            for episode in test_res:
+                for step in episode.trajectory:
+                    test_action_counts[step.action.name] += 1
+            st.subheader("Test action distribution")
+            st.bar_chart(
+                _room4_action_dataframe(test_action_counts),
+                x="Action",
+                y="Selections",
+                x_label="Action",
+                y_label="Number of selections",
+            )
+
+            st.subheader("Episode replay visualizer")
+            selected_ep_idx = st.selectbox("Select episode to replay", options=list(range(len(test_res))), format_func=lambda i: f"Episode {test_res[i].episode} (Success: {test_res[i].success}, Reward: {test_res[i].total_reward:.2f})")
             ep_data = test_res[selected_ep_idx]
 
             if ep_data.trajectory:
-                step_idx = st.slider("Step timeline", 0, len(ep_data.trajectory) - 1, 0)
-                step_info = ep_data.trajectory[step_idx]
+                replay_controls = st.columns([1, 2], vertical_alignment="bottom")
+                with replay_controls[0]:
+                    play_replay = st.button(
+                        "Play replay",
+                        icon=":material/play_arrow:",
+                        type="primary",
+                        width="stretch",
+                        key=f"room4_play_replay_{selected_ep_idx}",
+                        help="Play every recorded timestep in order. At 1× speed, one step is shown every 0.02 seconds.",
+                    )
+                with replay_controls[1]:
+                    replay_speed = st.select_slider(
+                        "Playback speed",
+                        options=[0.5, 1.0, 2.0, 4.0],
+                        value=1.0,
+                        format_func=lambda value: f"{value:g}×",
+                        key=f"room4_replay_speed_{selected_ep_idx}",
+                        help="Controls replay speed. The 1× baseline is one timestep every 0.02 seconds; 2× uses 0.01 seconds and 0.5× uses 0.04 seconds.",
+                    )
+                st.caption("1× playback = one timestep every 0.02 seconds (50 steps per second).")
 
-                st.write(f"**Step {step_info.timestep}** | State: $(x={step_info.state[0]:.2f}, y={step_info.state[1]:.2f}, V_x={step_info.state[2]:.1f}, V_y={step_info.state[3]:.1f})$ | Action: {step_info.action.name} | Step Reward: {step_info.reward:.2f}")
+                replay_status = st.empty()
+                replay_frame = st.empty()
 
-                traj_states = [s.state for s in ep_data.trajectory[:step_idx + 1]]
-                st.markdown(render_room4_html(env, agent_state=step_info.state, trajectory=traj_states), unsafe_allow_html=True)
+                def show_room4_replay_step(step_index: int) -> None:
+                    step_info = ep_data.trajectory[step_index]
+                    replay_status.info(
+                        f"Step {step_info.timestep}/{len(ep_data.trajectory)} • "
+                        f"State: (x={step_info.state[0]:.2f}, y={step_info.state[1]:.2f}, "
+                        f"Vx={step_info.state[2]:.1f}, Vy={step_info.state[3]:.1f}) • "
+                        f"Action: {step_info.action.name} • Step reward: {step_info.reward:.2f} • "
+                        f"Cumulative reward: {step_info.cumulative_reward:.2f}"
+                    )
+                    trajectory_states = [
+                        step.state for step in ep_data.trajectory[: step_index + 1]
+                    ]
+                    replay_frame.markdown(
+                        render_room4_html(
+                            env,
+                            agent_state=step_info.next_state,
+                            trajectory=trajectory_states + [step_info.next_state],
+                        ),
+                        unsafe_allow_html=True,
+                    )
+
+                show_room4_replay_step(0)
+                if play_replay:
+                    frame_delay = ROOM4_REPLAY_BASE_STEP_SECONDS / float(replay_speed)
+                    for replay_step_index in range(len(ep_data.trajectory)):
+                        show_room4_replay_step(replay_step_index)
+                        if replay_step_index < len(ep_data.trajectory) - 1:
+                            time.sleep(frame_delay)
+                    replay_status.success(
+                        f"Replay complete • {len(ep_data.trajectory)} timesteps • "
+                        f"Total reward: {ep_data.total_reward:.2f}"
+                    )
         else:
             st.info("Run a test from the left sidebar to view test metrics and replay trajectories.")
 
@@ -1934,11 +2222,423 @@ def render_room4() -> None:
                 "Learning Rate": config.alpha,
                 "Discount Factor": config.gamma,
                 "Episodes Trained": res.episodes_run,
+                "Training Duration Seconds": float(
+                    getattr(res, "training_duration_seconds", 0.0)
+                ),
+                "Action Counts": getattr(res, "action_counts", {}),
                 "Converged": res.converged,
             })
 
         else:
             st.info("No trained model currently in memory.")
+
+
+# =====================================================================
+# ROOM 5 (PPO - ONE-WAY ROAD) IMPLEMENTATION
+# =====================================================================
+
+ROOM5_HELP = {
+    "section": "Choose whether to configure the road, train PPO, evaluate a trained policy, or manage saved Room 5 models.",
+    "lanes": "Number of one-way traffic lanes. The agent can move left, keep its lane, or move right. More lanes provide more escape routes but enlarge the decision space.",
+    "vision": "Maximum distance ahead, in meters, included in the agent's observation. A longer range gives earlier warning but compresses nearby distance differences.",
+    "road_length": "Forward distance required to complete an episode successfully. Longer roads require the policy to avoid traffic for more timesteps.",
+    "traffic_count": "Number of slower same-direction cars circulating ahead. More cars increase traffic density and the frequency of avoidance decisions.",
+    "ego_speed": "Constant speed of the agent car. It must remain faster than traffic so that other cars approach in the agent-relative view and can be overtaken.",
+    "traffic_min": "Minimum speed assigned to a traffic car. Slower cars approach the agent more quickly and are harder to avoid.",
+    "traffic_max": "Maximum traffic-car speed. It stays below the agent speed to preserve same-direction overtaking behavior.",
+    "env_seed": "Controls the initial traffic lanes, distances, and speeds so the same road setup can be reproduced.",
+    "step": "Reward on every timestep. A small negative value discourages unnecessarily long episodes.",
+    "progress": "Reward multiplier per meter of forward travel. It provides dense feedback even before a car is overtaken.",
+    "overtake": "Reward granted each time the agent safely passes a traffic car.",
+    "lane_change": "Reward applied to a valid lane change. A small penalty reduces needless weaving while still allowing evasive maneuvers.",
+    "invalid_change": "Penalty for requesting a lane beyond the left or right road boundary.",
+    "collision": "Terminal penalty for occupying the same lane and longitudinal space as another car.",
+    "goal": "Terminal reward for reaching the configured road length without a collision.",
+    "alpha": "PPO optimizer learning rate. Larger values learn faster but may destabilize both policy and value estimates.",
+    "gamma": "Discount factor for future rewards. Values near 1 make safe long-term driving more important.",
+    "gae": "Generalized Advantage Estimation lambda. Higher values reduce bias but increase variance in policy updates.",
+    "clip": "Limits how far the policy may change during one PPO update. Smaller values are conservative; larger values allow faster but riskier changes.",
+    "entropy": "Strength of the exploration bonus. Higher values keep action probabilities more diverse for longer.",
+    "value_coef": "Weight of the critic's value-prediction loss in the combined PPO objective.",
+    "epochs": "Number of optimization passes over each episode rollout. More passes reuse data more heavily but can overfit a rollout.",
+    "batch": "Maximum rollout samples used in one PPO gradient step. Larger batches are smoother and use more memory.",
+    "episodes": "Number of complete road attempts used for training.",
+    "timesteps": "Maximum decisions per episode. Collision or road completion can end the episode earlier.",
+    "layers": "Number of hidden layers shared by the actor and critic before their separate output heads.",
+    "units": "Number of neurons in each hidden layer. More neurons increase capacity and training cost.",
+    "activation": "Non-linear function used between hidden layers. Tanh is a common stable choice for PPO.",
+    "train_seed": "Controls neural-network initialization and sampled PPO actions for reproducible experiments.",
+    "live": "Refresh live graphs every N episodes. Smaller values provide finer feedback but add dashboard overhead.",
+    "test_episodes": "Number of greedy evaluation episodes with no sampled exploration.",
+    "test_steps": "Maximum decisions allowed in each evaluation episode.",
+    "test_seed": "Controls evaluation traffic generation so results can be reproduced.",
+}
+
+
+def _invalidate_room5_model() -> None:
+    st.session_state.room5_result = None
+    st.session_state.room5_result_environment = None
+    st.session_state.room5_algorithm_config = None
+    st.session_state.room5_test_results = None
+
+
+def build_room5_environment() -> Room5Environment:
+    controls = st.session_state.room5_environment_controls
+    return Room5Environment(
+        Room5Config(
+            lane_count=int(controls["lane_count"]),
+            vision_distance=float(controls["vision_distance"]),
+            road_length=float(controls["road_length"]),
+            ego_speed=float(controls["ego_speed"]),
+            traffic_speed_min=float(controls["traffic_speed_min"]),
+            traffic_speed_max=float(controls["traffic_speed_max"]),
+            traffic_count=int(controls["traffic_count"]),
+            rewards=dict(st.session_state.room5_reward_values),
+            seed=int(controls["seed"]),
+        )
+    )
+
+
+def _room5_action_dataframe(action_counts: dict[str, int]) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "Action": [action.name for action in Action5],
+            "Selections": [int(action_counts.get(action.name, 0)) for action in Action5],
+        }
+    )
+
+
+def render_room5_controls() -> tuple[str, dict[str, bool], bool]:
+    st.sidebar.title("Room 5 Controls (PPO)")
+    section = st.sidebar.radio(
+        "Control section",
+        ["Environment", "Training", "Testing", "Models"],
+        key="room5_control_section",
+        help=ROOM5_HELP["section"],
+    )
+    requests = {"train": False, "reset": False}
+    run_test = False
+
+    if section == "Environment":
+        controls = dict(st.session_state.room5_environment_controls)
+        st.sidebar.subheader("One-way road")
+        lane_count = st.sidebar.slider("Number of lanes", 2, 6, int(controls["lane_count"]), key="r5_lanes", help=ROOM5_HELP["lanes"])
+        vision = st.sidebar.slider("Forward vision distance (m)", 40.0, 200.0, float(controls["vision_distance"]), 5.0, key="r5_vision", help=ROOM5_HELP["vision"])
+        road_length = st.sidebar.slider("Road completion distance (m)", 200.0, 2000.0, float(controls["road_length"]), 50.0, key="r5_road_length", help=ROOM5_HELP["road_length"])
+        traffic_count = st.sidebar.slider("Traffic car count", 4, 30, int(controls["traffic_count"]), key="r5_traffic_count", help=ROOM5_HELP["traffic_count"])
+        ego_speed = st.sidebar.slider("Agent speed (m/s)", 25.0, 40.0, float(controls["ego_speed"]), 1.0, key="r5_ego_speed", help=ROOM5_HELP["ego_speed"])
+        traffic_min = st.sidebar.slider("Minimum traffic speed (m/s)", 5.0, 20.0, float(controls["traffic_speed_min"]), 1.0, key="r5_traffic_min", help=ROOM5_HELP["traffic_min"])
+        traffic_max = st.sidebar.slider("Maximum traffic speed (m/s)", 21.0, 24.0, float(controls["traffic_speed_max"]), 1.0, key="r5_traffic_max", help=ROOM5_HELP["traffic_max"])
+        env_seed = st.sidebar.number_input("Environment seed", 0, value=int(controls["seed"]), key="r5_env_seed", help=ROOM5_HELP["env_seed"])
+
+        next_controls = {
+            "lane_count": int(lane_count),
+            "vision_distance": float(vision),
+            "road_length": float(road_length),
+            "ego_speed": float(ego_speed),
+            "traffic_speed_min": float(traffic_min),
+            "traffic_speed_max": float(traffic_max),
+            "traffic_count": int(traffic_count),
+            "seed": int(env_seed),
+        }
+
+        st.sidebar.subheader("Reward structure")
+        rewards = dict(st.session_state.room5_reward_values)
+        next_rewards = {
+            "step": float(st.sidebar.slider("Step reward", -1.0, 0.0, float(rewards["step"]), 0.01, key="r5_step_reward", help=ROOM5_HELP["step"])),
+            "forward_progress": float(st.sidebar.slider("Forward progress reward per meter", 0.0, 1.0, float(rewards["forward_progress"]), 0.01, key="r5_progress_reward", help=ROOM5_HELP["progress"])),
+            "overtake": float(st.sidebar.slider("Overtake reward", 0.0, 30.0, float(rewards["overtake"]), 0.5, key="r5_overtake_reward", help=ROOM5_HELP["overtake"])),
+            "lane_change": float(st.sidebar.slider("Lane-change reward", -2.0, 0.0, float(rewards["lane_change"]), 0.05, key="r5_lane_change_reward", help=ROOM5_HELP["lane_change"])),
+            "invalid_lane_change": float(st.sidebar.slider("Invalid lane-change penalty", -10.0, 0.0, float(rewards["invalid_lane_change"]), 0.5, key="r5_invalid_change_reward", help=ROOM5_HELP["invalid_change"])),
+            "collision": float(st.sidebar.slider("Collision penalty", -100.0, -1.0, float(rewards["collision"]), 1.0, key="r5_collision_reward", help=ROOM5_HELP["collision"])),
+            "goal_reached": float(st.sidebar.slider("Road completion reward", 5.0, 100.0, float(rewards["goal_reached"]), 1.0, key="r5_goal_reward", help=ROOM5_HELP["goal"])),
+        }
+        if next_controls != controls or next_rewards != rewards:
+            st.session_state.room5_environment_controls = next_controls
+            st.session_state.room5_reward_values = next_rewards
+            _invalidate_room5_model()
+
+    elif section == "Training":
+        controls = st.session_state.room5_training_controls
+        st.sidebar.subheader("PPO hyperparameters")
+        alpha = st.sidebar.number_input("Learning rate", 0.00001, 0.01, float(controls["alpha"]), format="%.5f", key="r5_alpha", help=ROOM5_HELP["alpha"])
+        gamma = st.sidebar.number_input("Discount factor", 0.0, 1.0, float(controls["gamma"]), format="%.3f", key="r5_gamma", help=ROOM5_HELP["gamma"])
+        gae_lambda = st.sidebar.number_input("GAE lambda", 0.0, 1.0, float(controls["gae_lambda"]), format="%.3f", key="r5_gae", help=ROOM5_HELP["gae"])
+        clip_epsilon = st.sidebar.number_input("PPO clip epsilon", 0.01, 0.5, float(controls["clip_epsilon"]), format="%.3f", key="r5_clip", help=ROOM5_HELP["clip"])
+        entropy_coefficient = st.sidebar.number_input("Entropy coefficient", 0.0, 0.2, float(controls["entropy_coefficient"]), format="%.3f", key="r5_entropy_coef", help=ROOM5_HELP["entropy"])
+        value_coefficient = st.sidebar.number_input("Value-loss coefficient", 0.0, 2.0, float(controls["value_coefficient"]), format="%.2f", key="r5_value_coef", help=ROOM5_HELP["value_coef"])
+        update_epochs = st.sidebar.number_input("Update epochs per rollout", 1, 20, int(controls["update_epochs"]), key="r5_update_epochs", help=ROOM5_HELP["epochs"])
+        mini_batch_size = st.sidebar.select_slider("Mini-batch size", [16, 32, 64, 128, 256], value=int(controls["mini_batch_size"]), key="r5_batch", help=ROOM5_HELP["batch"])
+        episodes = st.sidebar.number_input("Episodes", 1, 5000, int(controls["episodes"]), key="r5_episodes", help=ROOM5_HELP["episodes"])
+        max_timesteps = st.sidebar.number_input("Maximum timesteps", 10, 2000, int(controls["max_timesteps"]), key="r5_max_steps", help=ROOM5_HELP["timesteps"])
+
+        st.sidebar.subheader("Actor-critic network")
+        hidden_layers = st.sidebar.slider("Hidden layer count", 1, 4, int(controls["hidden_layers"]), key="r5_hidden_layers", help=ROOM5_HELP["layers"])
+        hidden_units = st.sidebar.select_slider("Neurons per hidden layer", [32, 64, 128, 256], value=int(controls["hidden_units"]), key="r5_hidden_units", help=ROOM5_HELP["units"])
+        activations = ["Tanh", "ReLU", "LeakyReLU", "ELU", "SiLU"]
+        activation = st.sidebar.selectbox("Activation function", activations, index=activations.index(controls["activation_fn"]), key="r5_activation", help=ROOM5_HELP["activation"])
+        seed = st.sidebar.number_input("Training seed", 0, value=int(controls["seed"]), key="r5_train_seed", help=ROOM5_HELP["train_seed"])
+        live_update = st.sidebar.number_input("Update charts every N episodes", 1, 100, int(controls["live_update_every"]), key="r5_live_update", help=ROOM5_HELP["live"])
+        st.session_state.room5_training_controls = {
+            "alpha": float(alpha), "gamma": float(gamma), "gae_lambda": float(gae_lambda),
+            "clip_epsilon": float(clip_epsilon), "entropy_coefficient": float(entropy_coefficient),
+            "value_coefficient": float(value_coefficient), "update_epochs": int(update_epochs),
+            "mini_batch_size": int(mini_batch_size), "episodes": int(episodes),
+            "max_timesteps": int(max_timesteps), "hidden_layers": int(hidden_layers),
+            "hidden_units": int(hidden_units), "activation_fn": str(activation),
+            "seed": int(seed), "live_update_every": int(live_update),
+        }
+        requests["train"] = st.sidebar.button("Train PPO agent", icon=":material/play_arrow:", type="primary", width="stretch", key="r5_train", help="Start PPO training with the current road, rewards, and hyperparameters.")
+        requests["reset"] = st.sidebar.button("Reset trained model", icon=":material/restart_alt:", width="stretch", key="r5_reset", help="Remove the Room 5 model and test results from this browser session.")
+
+    elif section == "Testing":
+        controls = st.session_state.room5_test_controls
+        st.sidebar.subheader("Test configuration")
+        episodes = st.sidebar.number_input("Test episodes", 1, 1000, int(controls["episodes"]), key="r5_test_episodes", help=ROOM5_HELP["test_episodes"])
+        max_timesteps = st.sidebar.number_input("Maximum timesteps per episode", 10, 5000, int(controls["max_timesteps"]), key="r5_test_steps", help=ROOM5_HELP["test_steps"])
+        seed = st.sidebar.number_input("Test seed", 0, value=int(controls["seed"]), key="r5_test_seed", help=ROOM5_HELP["test_seed"])
+        st.session_state.room5_test_controls = {"episodes": int(episodes), "max_timesteps": int(max_timesteps), "seed": int(seed)}
+        run_test = st.sidebar.button("Run test", icon=":material/science:", type="primary", width="stretch", disabled=st.session_state.room5_result is None, key="r5_run_test", help="Evaluate the trained PPO policy greedily and record metrics and replay trajectories.")
+
+    else:
+        result = st.session_state.room5_result
+        environment = st.session_state.room5_result_environment
+        algorithm_config = st.session_state.room5_algorithm_config
+        st.sidebar.subheader("Model artifact")
+        if result and environment and algorithm_config:
+            st.sidebar.download_button("Download Room 5 model (JSON)", export_room5_artifact(environment, algorithm_config, result), "room5_ppo_model.json", "application/json", icon=":material/download:", width="stretch", help="Download the PPO weights, environment, hyperparameters, and training metrics.")
+        uploaded = st.sidebar.file_uploader("Upload Room 5 model JSON", type=["json"], key="r5_upload", help="Select a Room 5 PPO artifact exported by this dashboard.")
+        if uploaded is not None and st.sidebar.button("Load model", icon=":material/upload_file:", width="stretch", key="r5_load", help="Validate and restore the uploaded Room 5 model."):
+            try:
+                environment, algorithm_config, result = import_room5_artifact(uploaded.getvalue().decode("utf-8"))
+            except Exception as exc:
+                st.sidebar.error(f"Invalid artifact: {exc}")
+            else:
+                st.session_state.room5_result = result
+                st.session_state.room5_result_environment = environment
+                st.session_state.room5_algorithm_config = algorithm_config
+                st.session_state.room5_test_results = None
+                config = environment.config
+                st.session_state.room5_environment_controls = {
+                    "lane_count": config.lane_count, "vision_distance": config.vision_distance,
+                    "road_length": config.road_length, "ego_speed": config.ego_speed,
+                    "traffic_speed_min": config.traffic_speed_min, "traffic_speed_max": config.traffic_speed_max,
+                    "traffic_count": config.traffic_count, "seed": config.seed,
+                }
+                st.session_state.room5_reward_values = dict(config.rewards)
+                st.sidebar.success("Room 5 PPO model loaded successfully.")
+                st.rerun()
+
+    return section, requests, run_test
+
+
+def _render_room5_training_summary(result: Any) -> None:
+    metrics = pd.DataFrame([asdict(metric) for metric in result.metrics])
+    kpis = st.columns(4)
+    kpis[0].metric("Training duration", _format_training_duration(float(result.training_duration_seconds)))
+    kpis[1].metric("Episodes", result.episodes_run)
+    kpis[2].metric("Total overtakes", int(metrics["overtakes"].sum()))
+    kpis[3].metric("Late success", "Yes" if result.converged else "No")
+
+    st.subheader("Training metrics")
+    chart_columns = st.columns(2)
+    with chart_columns[0]:
+        st.caption("**Total reward per episode**")
+        st.line_chart(metrics, x="episode", y="total_reward", x_label="Episode", y_label="Total reward")
+        st.caption("**Overtakes per episode**")
+        st.line_chart(metrics, x="episode", y="overtakes", x_label="Episode", y_label="Overtakes")
+    with chart_columns[1]:
+        st.caption("**PPO policy and value loss**")
+        st.line_chart(metrics, x="episode", y=["policy_loss", "value_loss"], x_label="Episode", y_label="Loss")
+        st.caption("**Policy entropy**")
+        st.line_chart(metrics, x="episode", y="entropy", x_label="Episode", y_label="Entropy")
+
+    st.subheader("Training action distribution")
+    st.bar_chart(_room5_action_dataframe(result.action_counts), x="Action", y="Selections", x_label="Action", y_label="Number of selections")
+
+
+def render_room5() -> None:
+    section, requests, run_test = render_room5_controls()
+    st.markdown('<div class="room-header"><h2>🚘 Room 5: One-way traffic avoidance (PPO)</h2></div>', unsafe_allow_html=True)
+
+    if section == "Environment":
+        environment = build_room5_environment()
+        st.subheader("Configurable one-way road")
+        st.markdown(render_room5_html(environment), unsafe_allow_html=True)
+        controls = environment.config
+        with st.container(horizontal=True):
+            st.metric("Lanes", controls.lane_count, border=True)
+            st.metric("Vision", f"{controls.vision_distance:.0f}m", border=True)
+            st.metric("Traffic cars", controls.traffic_count, border=True)
+            st.metric("Goal distance", f"{controls.road_length:.0f}m", border=True)
+        st.caption(
+            "All traffic travels in the same direction. Because the agent is faster, "
+            "slower vehicles move toward it in the agent-relative view and must be avoided or overtaken."
+        )
+
+    elif section == "Training":
+        if requests["reset"]:
+            _invalidate_room5_model()
+            st.success("Room 5 trained model reset.")
+            st.rerun()
+
+        if requests["train"]:
+            environment = build_room5_environment()
+            controls = st.session_state.room5_training_controls
+            config = PPOConfig(
+                alpha=controls["alpha"], gamma=controls["gamma"],
+                gae_lambda=controls["gae_lambda"], clip_epsilon=controls["clip_epsilon"],
+                entropy_coefficient=controls["entropy_coefficient"],
+                value_coefficient=controls["value_coefficient"], update_epochs=controls["update_epochs"],
+                mini_batch_size=controls["mini_batch_size"], episodes=controls["episodes"],
+                max_timesteps=controls["max_timesteps"],
+                hidden_dims=tuple([controls["hidden_units"]] * controls["hidden_layers"]),
+                activation_fn=controls["activation_fn"], seed=controls["seed"],
+            )
+            status = st.empty()
+            st.subheader("Live training metrics")
+            chart_columns = st.columns(2)
+            with chart_columns[0]:
+                st.caption("**Total reward per episode**")
+                reward_slot = st.empty()
+                st.caption("**Overtakes per episode**")
+                overtake_slot = st.empty()
+            with chart_columns[1]:
+                st.caption("**Policy and value loss**")
+                loss_slot = st.empty()
+                st.caption("**Policy entropy**")
+                entropy_slot = st.empty()
+            live_rows: list[dict[str, Any]] = []
+
+            def room5_live_callback(metric: Any, policy_net: Any) -> None:
+                live_rows.append(asdict(metric))
+                if metric.episode % controls["live_update_every"] == 0 or metric.episode == config.episodes:
+                    status.info(
+                        f"Training episode {metric.episode}/{config.episodes} • "
+                        f"Reward: {metric.total_reward:.2f} • Overtakes: {metric.overtakes} • "
+                        f"Entropy: {metric.entropy:.3f}"
+                    )
+                    frame = pd.DataFrame(live_rows)
+                    reward_slot.line_chart(frame, x="episode", y="total_reward", x_label="Episode", y_label="Total reward")
+                    overtake_slot.line_chart(frame, x="episode", y="overtakes", x_label="Episode", y_label="Overtakes")
+                    loss_slot.line_chart(frame, x="episode", y=["policy_loss", "value_loss"], x_label="Episode", y_label="Loss")
+                    entropy_slot.line_chart(frame, x="episode", y="entropy", x_label="Episode", y_label="Entropy")
+
+            with st.spinner("Training PPO agent..."):
+                result = run_ppo(environment, config, callback=room5_live_callback)
+            st.session_state.room5_result = result
+            st.session_state.room5_result_environment = environment
+            st.session_state.room5_algorithm_config = config
+            st.session_state.room5_test_results = None
+            status.success(f"PPO training complete in {_format_training_duration(result.training_duration_seconds)}.")
+            st.subheader("Training action distribution")
+            st.bar_chart(_room5_action_dataframe(result.action_counts), x="Action", y="Selections", x_label="Action", y_label="Number of selections")
+
+        result = st.session_state.room5_result
+        if result is not None and not requests["train"]:
+            _render_room5_training_summary(result)
+        elif result is None and not requests["train"]:
+            st.info("Use the left sidebar to configure and train the Room 5 PPO agent.")
+
+    elif section == "Testing":
+        if run_test:
+            result = st.session_state.room5_result
+            environment = st.session_state.room5_result_environment
+            if result and environment:
+                controls = st.session_state.room5_test_controls
+                with st.spinner("Evaluating PPO policy..."):
+                    st.session_state.room5_test_results = evaluate_room5_ppo(
+                        environment, result.policy_net,
+                        episodes=controls["episodes"], max_timesteps=controls["max_timesteps"], seed=controls["seed"],
+                    )
+
+        results = st.session_state.room5_test_results
+        environment = st.session_state.room5_result_environment
+        if results and environment:
+            table = pd.DataFrame(
+                [{"Episode": item.episode, "Success": item.success, "Collision": item.collision,
+                  "Timesteps": item.timesteps, "Total reward": item.total_reward, "Overtakes": item.overtakes}
+                 for item in results]
+            )
+            with st.container(horizontal=True):
+                st.metric("Success rate", f"{100.0 * table['Success'].mean():.1f}%", border=True)
+                st.metric("Collision rate", f"{100.0 * table['Collision'].mean():.1f}%", border=True)
+                st.metric("Mean overtakes", f"{table['Overtakes'].mean():.2f}", border=True)
+                st.metric("Mean reward", f"{table['Total reward'].mean():.2f}", border=True)
+            charts = st.columns(2)
+            with charts[0]:
+                st.caption("**Test reward by episode**")
+                st.line_chart(table, x="Episode", y="Total reward", x_label="Episode", y_label="Total reward")
+            action_counts = {action.name: 0 for action in Action5}
+            for episode in results:
+                for step in episode.trajectory:
+                    action_counts[step.action.name] += 1
+            with charts[1]:
+                st.caption("**Test action distribution**")
+                st.bar_chart(_room5_action_dataframe(action_counts), x="Action", y="Selections", x_label="Action", y_label="Number of selections")
+            st.dataframe(table, width="stretch")
+
+            st.subheader("Episode replay visualizer")
+            selected_index = st.selectbox(
+                "Select episode to replay", range(len(results)),
+                format_func=lambda index: f"Episode {results[index].episode} (Success: {results[index].success}, Reward: {results[index].total_reward:.2f})",
+                key="r5_replay_episode",
+            )
+            episode = results[selected_index]
+            if episode.trajectory:
+                controls_row = st.columns([1, 2], vertical_alignment="bottom")
+                with controls_row[0]:
+                    play = st.button("Play replay", icon=":material/play_arrow:", type="primary", width="stretch", key=f"r5_play_{selected_index}", help="Play the recorded driving decisions automatically from start to finish.")
+                with controls_row[1]:
+                    speed = st.select_slider("Playback speed", [0.5, 1.0, 2.0, 4.0], value=1.0, format_func=lambda value: f"{value:g}×", key=f"r5_speed_{selected_index}", help="At 1×, one recorded decision is displayed every 0.05 seconds.")
+                st.caption("1× playback = one driving decision every 0.05 seconds.")
+                replay_status = st.empty()
+                replay_frame = st.empty()
+
+                def show_room5_step(index: int) -> None:
+                    step = episode.trajectory[index]
+                    replay_status.info(
+                        f"Step {step.timestep}/{len(episode.trajectory)} • Action: {step.action.name} • "
+                        f"Reward: {step.reward:.2f} • Cumulative: {step.cumulative_reward:.2f} • "
+                        f"Events: {', '.join(step.events)}"
+                    )
+                    replay_frame.markdown(render_room5_html(environment, step.after_snapshot), unsafe_allow_html=True)
+
+                show_room5_step(0)
+                if play:
+                    for index in range(len(episode.trajectory)):
+                        show_room5_step(index)
+                        if index < len(episode.trajectory) - 1:
+                            time.sleep(0.05 / float(speed))
+                    replay_status.success(
+                        f"Replay complete • {episode.timesteps} timesteps • "
+                        f"Overtakes: {episode.overtakes} • Total reward: {episode.total_reward:.2f}"
+                    )
+        else:
+            st.info("Train a Room 5 model and run a test to view evaluation metrics and replay trajectories.")
+
+    else:
+        result = st.session_state.room5_result
+        config = st.session_state.room5_algorithm_config
+        st.subheader("Model and network information")
+        if result and config:
+            st.json({
+                "Algorithm": "PPO (Proximal Policy Optimization)",
+                "Observation dimension": 19,
+                "Actions": [action.name for action in Action5],
+                "Hidden architecture": list(config.hidden_dims),
+                "Activation function": config.activation_fn,
+                "Learning rate": config.alpha,
+                "Discount factor": config.gamma,
+                "GAE lambda": config.gae_lambda,
+                "Clip epsilon": config.clip_epsilon,
+                "Episodes trained": result.episodes_run,
+                "Training duration seconds": result.training_duration_seconds,
+                "Action counts": result.action_counts,
+                "Converged": result.converged,
+            })
+        else:
+            st.info("No trained Room 5 model is currently in memory.")
 
 
 def render_future_room(room_name: str) -> None:
@@ -1965,6 +2665,8 @@ elif active_room == "Room 3":
     render_room(3)
 elif active_room == "Room 4":
     render_room4()
+elif active_room == "Room 5":
+    render_room5()
 else:
     render_future_room(active_room)
 

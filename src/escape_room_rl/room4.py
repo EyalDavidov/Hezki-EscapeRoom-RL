@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import IntEnum
 import numpy as np
 
@@ -74,10 +74,41 @@ DEFAULT_ROOM4_PIPES: list[PipeObstacle] = [
 DEFAULT_ROOM4_REWARDS: dict[str, float] = {
     "step": -0.05,
     "progress": 0.5,
+    "backward": 0.0,
     "pipe_passed": 5.0,
     "goal_reached": 20.0,
     "collision": -20.0,
 }
+
+
+def distribute_pipes_evenly(
+    pipes: list[PipeObstacle],
+    count: int,
+    *,
+    first_x: float = 2.0,
+    last_x: float = 8.0,
+) -> list[PipeObstacle]:
+    """Return ``count`` pipes with equal horizontal spacing inside the room.
+
+    Existing pipe width and gap settings are retained in their current order.
+    Newly added pipes receive the default obstacle settings.  The default
+    2m-to-8m range safely supports five pipes up to 2m wide in a 10m room.
+    """
+    if count <= 0:
+        raise ValueError("Pipe count must be positive.")
+    if first_x >= last_x and count > 1:
+        raise ValueError("first_x must be smaller than last_x for multiple pipes.")
+
+    templates = list(pipes[:count])
+    while len(templates) < count:
+        templates.append(PipeObstacle(x=0.0, width=0.6, gap_start=3.0, gap_size=3.0))
+
+    positions = (
+        [float((first_x + last_x) / 2.0)]
+        if count == 1
+        else np.linspace(first_x, last_x, count).tolist()
+    )
+    return [replace(pipe, x=float(x)) for pipe, x in zip(templates, positions)]
 
 
 @dataclass
@@ -158,6 +189,9 @@ class Room4Environment:
         dx = new_x - x
         if dx > 0:
             reward += dx * self.config.rewards.get("progress", 0.5)
+        elif dx < 0:
+            events.append("backward_move")
+            reward += self.config.rewards.get("backward", 0.0)
 
         # Boundary collision
         if new_x < 0 or new_x > self.config.width or new_y <= 0 or new_y >= self.config.height:

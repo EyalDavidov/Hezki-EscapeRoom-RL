@@ -467,6 +467,13 @@ def export_room4_artifact(
             "metrics": [asdict(metric) for metric in result.metrics],
             "converged": bool(result.converged),
             "episodes_run": int(result.episodes_run),
+            "training_duration_seconds": float(
+                getattr(result, "training_duration_seconds", 0.0)
+            ),
+            "action_counts": {
+                str(action): int(count)
+                for action, count in getattr(result, "action_counts", {}).items()
+            },
         },
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -546,8 +553,133 @@ def import_room4_artifact(
         metrics=metrics,
         converged=bool(result_data["converged"]),
         episodes_run=int(result_data["episodes_run"]),
+        training_duration_seconds=float(
+            result_data.get("training_duration_seconds", 0.0)
+        ),
+        action_counts={
+            str(action): int(count)
+            for action, count in result_data.get("action_counts", {}).items()
+        },
         config=algorithm_config,
     )
 
+    return environment, algorithm_config, result
+
+
+# =====================================================================
+# Room 5 (PPO)
+# =====================================================================
+
+def export_room5_artifact(
+    environment: Any,
+    algorithm_config: Any,
+    result: Any,
+) -> str:
+    weights = {
+        key: value.cpu().tolist()
+        for key, value in result.policy_net.state_dict().items()
+    }
+    payload: dict[str, Any] = {
+        "artifact_version": ARTIFACT_VERSION,
+        "room": 5,
+        "algorithm": "ppo",
+        "environment": {
+            "lane_count": int(environment.config.lane_count),
+            "vision_distance": float(environment.config.vision_distance),
+            "road_length": float(environment.config.road_length),
+            "dt": float(environment.config.dt),
+            "ego_speed": float(environment.config.ego_speed),
+            "traffic_speed_min": float(environment.config.traffic_speed_min),
+            "traffic_speed_max": float(environment.config.traffic_speed_max),
+            "traffic_count": int(environment.config.traffic_count),
+            "car_length": float(environment.config.car_length),
+            "rewards": dict(environment.config.rewards),
+            "seed": int(environment.config.seed),
+        },
+        "algorithm_config": {
+            **asdict(algorithm_config),
+            "hidden_dims": list(algorithm_config.hidden_dims),
+        },
+        "result": {
+            "weights": weights,
+            "metrics": [asdict(metric) for metric in result.metrics],
+            "converged": bool(result.converged),
+            "episodes_run": int(result.episodes_run),
+            "training_duration_seconds": float(result.training_duration_seconds),
+            "action_counts": {
+                str(action): int(count)
+                for action, count in result.action_counts.items()
+            },
+        },
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def import_room5_artifact(raw_json: str) -> tuple[Any, Any, Any]:
+    import torch
+
+    from .ppo import (
+        ActorCriticNetwork,
+        PPOConfig,
+        PPOResult,
+        PPOTrainingMetric,
+    )
+    from .room5 import Room5Config, Room5Environment
+
+    payload = json.loads(raw_json)
+    if payload.get("artifact_version") != ARTIFACT_VERSION:
+        raise ValueError("Unsupported artifact version.")
+    if payload.get("room") != 5 or payload.get("algorithm") != "ppo":
+        raise ValueError("The uploaded artifact is not a Room 5 PPO model.")
+
+    environment_data = payload["environment"]
+    room_config = Room5Config(
+        lane_count=int(environment_data["lane_count"]),
+        vision_distance=float(environment_data["vision_distance"]),
+        road_length=float(environment_data["road_length"]),
+        dt=float(environment_data["dt"]),
+        ego_speed=float(environment_data["ego_speed"]),
+        traffic_speed_min=float(environment_data["traffic_speed_min"]),
+        traffic_speed_max=float(environment_data["traffic_speed_max"]),
+        traffic_count=int(environment_data["traffic_count"]),
+        car_length=float(environment_data["car_length"]),
+        rewards={
+            str(event): float(value)
+            for event, value in environment_data["rewards"].items()
+        },
+        seed=int(environment_data.get("seed", 42)),
+    )
+    environment = Room5Environment(room_config)
+
+    algorithm_data = dict(payload["algorithm_config"])
+    algorithm_data["hidden_dims"] = tuple(algorithm_data["hidden_dims"])
+    algorithm_config = PPOConfig(**algorithm_data)
+    policy_net = ActorCriticNetwork(
+        observation_dim=environment.observation_size,
+        action_dim=environment.action_size,
+        hidden_dims=algorithm_config.hidden_dims,
+        activation_fn=algorithm_config.activation_fn,
+    )
+    state_dict = {
+        key: torch.tensor(value, dtype=torch.float32)
+        for key, value in payload["result"]["weights"].items()
+    }
+    policy_net.load_state_dict(state_dict)
+
+    result_data = payload["result"]
+    result = PPOResult(
+        policy_net=policy_net,
+        metrics=[PPOTrainingMetric(**metric) for metric in result_data["metrics"]],
+        converged=bool(result_data["converged"]),
+        episodes_run=int(result_data["episodes_run"]),
+        training_duration_seconds=float(
+            result_data.get("training_duration_seconds", 0.0)
+        ),
+        action_counts={
+            str(action): int(count)
+            for action, count in result_data.get("action_counts", {}).items()
+        },
+        config=algorithm_config,
+    )
     return environment, algorithm_config, result
 

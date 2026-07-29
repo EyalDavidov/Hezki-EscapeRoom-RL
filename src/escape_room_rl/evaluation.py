@@ -175,3 +175,97 @@ def evaluate_room4_dqn(
 
     return results
 
+
+# =====================================================================
+# Room 5 (PPO Evaluation)
+# =====================================================================
+
+@dataclass(frozen=True)
+class Room5EpisodeStep:
+    timestep: int
+    state: Any
+    action: Any
+    next_state: Any
+    reward: float
+    cumulative_reward: float
+    events: tuple[str, ...]
+    before_snapshot: Any
+    after_snapshot: Any
+
+
+@dataclass
+class Room5EpisodeResult:
+    episode: int
+    success: bool
+    timesteps: int
+    total_reward: float
+    overtakes: int
+    collision: bool
+    trajectory: list[Room5EpisodeStep] = field(default_factory=list)
+
+
+def evaluate_room5_ppo(
+    environment: Any,
+    policy_net: Any,
+    episodes: int,
+    max_timesteps: int,
+    seed: int = 42,
+) -> list[Room5EpisodeResult]:
+    from .ppo import select_ppo_action
+
+    if episodes <= 0 or max_timesteps <= 0:
+        raise ValueError("episodes and max_timesteps must be positive.")
+
+    policy_net.eval()
+    results: list[Room5EpisodeResult] = []
+    for episode in range(1, episodes + 1):
+        state = environment.reset(seed + episode)
+        total_reward = 0.0
+        overtakes = 0
+        collision = False
+        success = False
+        trajectory: list[Room5EpisodeStep] = []
+
+        for timestep in range(1, max_timesteps + 1):
+            before_snapshot = environment.snapshot()
+            action = select_ppo_action(
+                policy_net,
+                state,
+                deterministic=True,
+            )
+            transition = environment.step(action)
+            total_reward += transition.reward
+            overtakes += transition.events.count("overtake")
+            collision = collision or "collision" in transition.events
+            success = success or "goal_reached" in transition.events
+            trajectory.append(
+                Room5EpisodeStep(
+                    timestep=timestep,
+                    state=state,
+                    action=action,
+                    next_state=transition.next_state,
+                    reward=transition.reward,
+                    cumulative_reward=float(total_reward),
+                    events=transition.events,
+                    before_snapshot=before_snapshot,
+                    after_snapshot=transition.snapshot,
+                )
+            )
+            state = transition.next_state
+            if transition.done:
+                break
+
+        results.append(
+            Room5EpisodeResult(
+                episode=episode,
+                success=success,
+                timesteps=len(trajectory),
+                total_reward=float(total_reward),
+                overtakes=overtakes,
+                collision=collision,
+                trajectory=trajectory,
+            )
+        )
+
+    return results
+

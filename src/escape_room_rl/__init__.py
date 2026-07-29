@@ -7,6 +7,9 @@ from .evaluation import (
     Room4EpisodeStep,
     evaluate_policy,
     evaluate_room4_dqn,
+    Room5EpisodeResult,
+    Room5EpisodeStep,
+    evaluate_room5_ppo,
 )
 from .policy_iteration import (
     PolicyIterationConfig,
@@ -43,6 +46,14 @@ from .room4 import (
     PipeObstacle,
     Room4Config,
     Room4Environment,
+    distribute_pipes_evenly,
+)
+from .room5 import (
+    Action5,
+    RoadSnapshot,
+    Room5Config,
+    Room5Environment,
+    TrafficCar,
 )
 from .dqn import (
     DQNConfig,
@@ -50,6 +61,13 @@ from .dqn import (
     DQNResult,
     DQNTrainingMetric,
     run_dqn,
+)
+from .ppo import (
+    ActorCriticNetwork,
+    PPOConfig,
+    PPOResult,
+    PPOTrainingMetric,
+    run_ppo,
 )
 from .sarsa import (
     SarsaConfig,
@@ -68,6 +86,8 @@ from .value_iteration import (
 __all__ = [
     "Action",
     "Action4",
+    "Action5",
+    "ActorCriticNetwork",
     "DQNConfig",
     "DQNNetwork",
     "DQNResult",
@@ -77,6 +97,9 @@ __all__ = [
     "PipeObstacle",
     "PolicyIterationConfig",
     "PolicyIterationResult",
+    "PPOConfig",
+    "PPOResult",
+    "PPOTrainingMetric",
     "QLearningConfig",
     "QLearningResult",
     "QLearningTrainingMetric",
@@ -90,11 +113,17 @@ __all__ = [
     "Room4Environment",
     "Room4EpisodeResult",
     "Room4EpisodeStep",
+    "Room5Config",
+    "Room5Environment",
+    "Room5EpisodeResult",
+    "Room5EpisodeStep",
+    "RoadSnapshot",
     "SarsaConfig",
     "SarsaResult",
     "SarsaTrainingMetric",
     "SlipperyCell",
     "TrainingMetric",
+    "TrafficCar",
     "ValueIterationConfig",
     "ValueIterationMetric",
     "ValueIterationResult",
@@ -103,8 +132,11 @@ __all__ = [
     "default_room3_config",
     "evaluate_policy",
     "evaluate_room4_dqn",
+    "evaluate_room5_ppo",
     "generate_random_slippery_cells",
+    "distribute_pipes_evenly",
     "run_policy_iteration",
+    "run_ppo",
     "run_dqn",
     "run_q_learning",
     "run_sarsa",

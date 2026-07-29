@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Callable
 import numpy as np
 import torch
@@ -137,6 +138,8 @@ class DQNResult:
     metrics: list[DQNTrainingMetric] = field(default_factory=list)
     converged: bool = False
     episodes_run: int = 0
+    training_duration_seconds: float = 0.0
+    action_counts: dict[str, int] = field(default_factory=dict)
     config: DQNConfig = field(default_factory=DQNConfig)
 
 
@@ -183,6 +186,8 @@ def run_dqn(
     config: DQNConfig,
     callback: DQNCallback | None = None,
 ) -> DQNResult:
+    training_started_at = perf_counter()
+
     # Reproducibility
     torch.manual_seed(config.seed)
     np_rng = np.random.default_rng(config.seed)
@@ -200,6 +205,7 @@ def run_dqn(
     metrics: list[DQNTrainingMetric] = []
     epsilon = config.epsilon_start
     total_steps = 0
+    action_counts = {action.name: 0 for action in Action4}
 
     for episode in range(1, config.episodes + 1):
         state = environment.reset()
@@ -211,6 +217,7 @@ def run_dqn(
 
         for _ in range(config.max_timesteps):
             action = select_dqn_action(policy_net, state, epsilon, np_rng)
+            action_counts[action.name] += 1
             transition = environment.step(state, action)
             next_state = transition.next_state
             reward = transition.reward
@@ -281,5 +288,7 @@ def run_dqn(
         metrics=metrics,
         converged=any(m.success for m in metrics[-20:]) if len(metrics) >= 20 else False,
         episodes_run=config.episodes,
+        training_duration_seconds=float(perf_counter() - training_started_at),
+        action_counts=action_counts,
         config=config,
     )

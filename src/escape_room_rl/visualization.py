@@ -7,6 +7,7 @@ from typing import Any
 from .display_formatting import format_reward_label, reward_sign_class
 from .room1 import Action, State
 from .room4 import State4
+from .room5 import RoadSnapshot
 
 ACTION_ARROWS = {
     Action.UP: "↑",
@@ -249,6 +250,96 @@ def render_room4_html(
     return f"""
     <div style="display: flex; justify-content: center; width: 100%;">
       <svg width="{svg_width}" height="{svg_height}" viewBox="0 0 {svg_width} {svg_height}" style="border: 3px solid #263238; border-radius: 10px; background: #70c5ce; box-shadow: 0 4px 16px rgba(0,0,0,0.2);">
+        {''.join(elements)}
+      </svg>
+    </div>
+    """
+
+
+def render_room5_html(
+    environment: Any,
+    snapshot: RoadSnapshot | None = None,
+) -> str:
+    """Render Room 5 as a top-down one-way road with moving traffic."""
+    snapshot = snapshot or environment.snapshot()
+    svg_width = 720
+    svg_height = 600
+    lane_width = 78
+    road_width = environment.config.lane_count * lane_width
+    road_left = (svg_width - road_width) / 2
+    road_right = road_left + road_width
+    ego_y = 525.0
+    horizon_y = 55.0
+    visible_height = ego_y - horizon_y
+
+    def lane_center(lane: int) -> float:
+        return road_left + (lane + 0.5) * lane_width
+
+    def distance_y(distance: float) -> float:
+        ratio = max(-0.04, min(1.0, distance / environment.config.vision_distance))
+        return ego_y - ratio * visible_height
+
+    def car_svg(x: float, y: float, color: str, *, ego: bool = False) -> str:
+        width = 34 if ego else 31
+        height = 58 if ego else 52
+        label = "AGENT" if ego else ""
+        return (
+            f'<g transform="translate({x - width / 2:.1f},{y - height / 2:.1f})">'
+            f'<rect x="0" y="0" width="{width}" height="{height}" rx="8" fill="{color}" stroke="#111827" stroke-width="2" />'
+            f'<rect x="5" y="9" width="{width - 10}" height="13" rx="3" fill="#dbeafe" opacity="0.9" />'
+            f'<rect x="5" y="{height - 22}" width="{width - 10}" height="12" rx="3" fill="#bfdbfe" opacity="0.75" />'
+            f'<rect x="-3" y="10" width="4" height="12" rx="2" fill="#111827" />'
+            f'<rect x="{width - 1}" y="10" width="4" height="12" rx="2" fill="#111827" />'
+            f'<rect x="-3" y="{height - 22}" width="4" height="12" rx="2" fill="#111827" />'
+            f'<rect x="{width - 1}" y="{height - 22}" width="4" height="12" rx="2" fill="#111827" />'
+            + (
+                f'<text x="{width / 2}" y="{height + 15}" text-anchor="middle" fill="#dbeafe" font-size="11" font-weight="700">{label}</text>'
+                if ego
+                else ""
+            )
+            + "</g>"
+        )
+
+    elements: list[str] = [
+        f'<rect x="0" y="0" width="{svg_width}" height="{svg_height}" fill="#166534" />',
+        f'<rect x="{road_left}" y="0" width="{road_width}" height="{svg_height}" fill="#303640" stroke="#f8fafc" stroke-width="5" />',
+        f'<rect x="{road_left + 8}" y="0" width="4" height="{svg_height}" fill="#facc15" />',
+        f'<rect x="{road_right - 12}" y="0" width="4" height="{svg_height}" fill="#facc15" />',
+    ]
+
+    for lane in range(1, environment.config.lane_count):
+        x = road_left + lane * lane_width
+        elements.append(
+            f'<line x1="{x}" y1="0" x2="{x}" y2="{svg_height}" stroke="#f8fafc" stroke-width="3" stroke-dasharray="18,18" opacity="0.8" />'
+        )
+
+    elements.extend(
+        [
+            f'<line x1="{road_left}" y1="{horizon_y}" x2="{road_right}" y2="{horizon_y}" stroke="#38bdf8" stroke-width="3" stroke-dasharray="8,5" />',
+            f'<text x="{road_right + 16}" y="{horizon_y + 5}" fill="#bae6fd" font-size="13" font-weight="700">VISION {environment.config.vision_distance:.0f}m</text>',
+            f'<text x="18" y="32" fill="#dcfce7" font-size="16" font-weight="800">ONE-WAY ROAD</text>',
+            f'<text x="18" y="55" fill="#bbf7d0" font-size="13">Progress: {snapshot.progress:.1f}/{environment.config.road_length:.0f}m</text>',
+            f'<path d="M {svg_width - 46} 74 L {svg_width - 46} 24 M {svg_width - 58} 38 L {svg_width - 46} 24 L {svg_width - 34} 38" fill="none" stroke="#f8fafc" stroke-width="4" />',
+        ]
+    )
+
+    traffic_colors = ("#ef4444", "#f97316", "#a855f7", "#eab308")
+    for car in sorted(snapshot.traffic, key=lambda item: item.distance, reverse=True):
+        if not -environment.config.car_length <= car.distance <= environment.config.vision_distance:
+            continue
+        elements.append(
+            car_svg(
+                lane_center(car.lane),
+                distance_y(car.distance),
+                traffic_colors[car.car_id % len(traffic_colors)],
+            )
+        )
+
+    elements.append(car_svg(lane_center(snapshot.ego_lane), ego_y, "#2563eb", ego=True))
+
+    return f"""
+    <div style="display:flex;justify-content:center;width:100%;">
+      <svg width="{svg_width}" height="{svg_height}" viewBox="0 0 {svg_width} {svg_height}" role="img" aria-label="Room 5 one-way road with {environment.config.lane_count} lanes" style="border:3px solid #111827;border-radius:12px;background:#166534;box-shadow:0 6px 22px rgba(0,0,0,.3);">
         {''.join(elements)}
       </svg>
     </div>
