@@ -123,8 +123,10 @@ class Room5Environment:
         self._next_car_id = 0
         self.elapsed_time = 0.0
         self.traffic = []
-        for i in range(self.config.traffic_count):
-            self._spawn_arriving_car(distance=30.0 + i * 30.0)
+        for _ in range(self.config.traffic_count):
+            dist = float(self._rng.uniform(20.0, SPAWN_DISTANCE))
+            self._spawn_arriving_car(distance=dist)
+        self.traffic = self._enforce_minimum_traffic_clearance(self.traffic)
         return self.observation()
 
     def _spawn_arriving_car(self, distance: float | None = None) -> None:
@@ -138,8 +140,10 @@ class Room5Environment:
         lane = int(self._rng.choice(candidate_lanes))
         
         if distance is None:
-            farthest = max([car.distance for car in self.traffic], default=SPAWN_DISTANCE)
-            distance = max(SPAWN_DISTANCE, farthest + 30.0)
+            cars_in_lane = [car.distance for car in self.traffic if car.lane == lane]
+            farthest = max(cars_in_lane, default=SPAWN_DISTANCE)
+            spacing = float(self._rng.uniform(10.0, 30.0))
+            distance = max(SPAWN_DISTANCE, farthest + spacing)
 
         car = TrafficCar(
             car_id=self._next_car_id,
@@ -156,8 +160,8 @@ class Room5Environment:
         self.traffic.append(car)
 
     def forward_clearance(self, car: TrafficCar) -> float:
-        """Return the gap from the ego front edge to the traffic rear edge."""
-        return float(car.distance - self.config.car_length)
+        """Return the distance from the ego rear edge to the traffic front edge."""
+        return float(car.distance + self.config.car_length)
 
     def _enforce_minimum_traffic_clearance(
         self,

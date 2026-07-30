@@ -32,11 +32,6 @@ from escape_room_rl.artifacts import (  # noqa: E402
     export_room5_artifact,
     import_room5_artifact,
 )
-from escape_room_rl.evaluation import (  # noqa: E402
-    evaluate_policy,
-    evaluate_room4_ppo,
-    evaluate_room5_ppo,
-)
 from escape_room_rl.policy_iteration import (  # noqa: E402
     PolicyIterationConfig,
     run_policy_iteration,
@@ -697,7 +692,7 @@ def render_control_section_tabs(
 ) -> tuple[Any, Any, Any, Any]:
     with st.sidebar.container(key="control_section_switcher"):
         tabs = st.tabs(
-            ["Env", "Training", "Testing", "Model"],
+            ["Env", "Training", "Model"],
             key=f"{state_key}_tabs_v2",
             on_change="ignore",
         )
@@ -740,7 +735,6 @@ def initialize_state() -> None:
         "room1_result": None,
         "room1_result_environment": None,
         "room1_algorithm_config": None,
-        "room1_test_results": None,
         "room1_editor_nonce": 0,
         "room1_training_controls": {
             "algorithm": "Policy Iteration",
@@ -751,11 +745,6 @@ def initialize_state() -> None:
             "max_iterations": 1000,
             "seed": 42,
             "live_update_every": 5,
-        },
-        "room1_test_controls": {
-            "episodes": 100,
-            "max_timesteps": 250,
-            "seed": 123,
         },
         "room1_random_controls": {"wall_count": 20, "icy_count": 8, "seed": 42},
         # Room 2 (SARSA)
@@ -771,7 +760,6 @@ def initialize_state() -> None:
         "room2_result": None,
         "room2_result_environment": None,
         "room2_algorithm_config": None,
-        "room2_test_results": None,
         "room2_editor_nonce": 0,
         "room2_training_controls": {
             "alpha": 0.2,
@@ -783,11 +771,6 @@ def initialize_state() -> None:
             "max_timesteps": 200,
             "seed": 42,
             "live_update_every": 10,
-        },
-        "room2_test_controls": {
-            "episodes": 100,
-            "max_timesteps": 200,
-            "seed": 123,
         },
         "room2_random_controls": {"wall_count": 16, "icy_count": 6, "seed": 42},
         # Room 3 (Q-Learning)
@@ -803,7 +786,6 @@ def initialize_state() -> None:
         "room3_result": None,
         "room3_result_environment": None,
         "room3_algorithm_config": None,
-        "room3_test_results": None,
         "room3_editor_nonce": 0,
         "room3_training_controls": {
             "alpha": 0.2,
@@ -815,11 +797,6 @@ def initialize_state() -> None:
             "max_timesteps": 200,
             "seed": 42,
             "live_update_every": 10,
-        },
-        "room3_test_controls": {
-            "episodes": 100,
-            "max_timesteps": 200,
-            "seed": 123,
         },
         "room3_random_controls": {"wall_count": 14, "icy_count": 6, "seed": 42},
         # Room 4 (PPO - Flappy Bird)
@@ -834,7 +811,6 @@ def initialize_state() -> None:
         "room4_result": None,
         "room4_result_environment": None,
         "room4_algorithm_config": None,
-        "room4_test_results": None,
         "room4_training_controls": {
             "alpha": 0.0003,
             "gamma": 0.99,
@@ -852,11 +828,6 @@ def initialize_state() -> None:
             "seed": 42,
             "live_update_every": 10,
         },
-        "room4_test_controls": {
-            "episodes": 50,
-            "max_timesteps": 700,
-            "seed": 123,
-        },
         # Room 5 (PPO - one-way traffic avoidance)
         "room5_environment_controls": {
             "lane_count": 4,
@@ -873,7 +844,6 @@ def initialize_state() -> None:
         "room5_result": None,
         "room5_result_environment": None,
         "room5_algorithm_config": None,
-        "room5_test_results": None,
         "room5_training_controls": {
             "alpha": 0.0003,
             "gamma": 0.99,
@@ -890,11 +860,6 @@ def initialize_state() -> None:
             "activation_fn": "Tanh",
             "seed": 42,
             "live_update_every": 10,
-        },
-        "room5_test_controls": {
-            "episodes": 50,
-            "max_timesteps": 300,
-            "seed": 123,
         },
     }
 
@@ -1129,7 +1094,6 @@ def invalidate_room_model(room_num: int) -> None:
     st.session_state[f"{p}_result"] = None
     st.session_state[f"{p}_result_environment"] = None
     st.session_state[f"{p}_algorithm_config"] = None
-    st.session_state[f"{p}_test_results"] = None
 
 
 def current_cell_type(room_num: int, state: tuple[int, int]) -> str:
@@ -2042,7 +2006,6 @@ def render_training_page(
         st.session_state[f"{p}_result"] = res
         st.session_state[f"{p}_result_environment"] = env
         st.session_state[f"{p}_algorithm_config"] = alg_config
-        st.session_state[f"{p}_test_results"] = None
         st.session_state[f"{p}_training_notice"] = "Training completed successfully."
         for replay_key in (
             f"{p}_tr_replay_select",
@@ -2134,87 +2097,6 @@ def render_training_page(
         st.markdown(render_grid_html(env, policy=res.policy, values=res.values), unsafe_allow_html=True)
 
 
-def render_test_page(
-    room_num: int,
-    run_requested: bool,
-    *,
-    show_header: bool = True,
-) -> None:
-    p = room_prefix(room_num)
-    if show_header:
-        st.markdown(
-            f'<div class="room-header"><h1>Room {room_num} — Testing</h1>'
-            '<p>Evaluate the trained policy without updating values or Q-tables.</p></div>',
-            unsafe_allow_html=True,
-        )
-    res = st.session_state[f"{p}_result"]
-    env = st.session_state[f"{p}_result_environment"]
-    if res is None or env is None:
-        st.info("Train or load a model before running test episodes.")
-        return
-
-    if run_requested:
-        controls = st.session_state[f"{p}_test_controls"]
-        with st.spinner("Running test episodes..."):
-            st.session_state[f"{p}_test_results"] = evaluate_policy(
-                env, res.policy, controls["episodes"], controls["max_timesteps"], controls["seed"]
-            )
-
-    test_results = st.session_state[f"{p}_test_results"]
-    if not test_results:
-        st.info("Set test parameters in the left bar and click 🧪 Run test.")
-        return
-
-    frame = test_dataframe(test_results)
-    successful = frame[frame["success"]]
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Success rate", f"{frame['success'].mean():.1%}")
-    m2.metric("Mean timesteps", f"{frame['timesteps'].mean():.2f}")
-    m3.metric("Mean reward", f"{frame['total_reward'].mean():.3f}")
-    m4.metric("Mean slips", f"{frame['slips'].mean():.2f}")
-
-    if not successful.empty:
-        st.caption(
-            f"Successful episodes — median: {successful['timesteps'].median():.1f}, "
-            f"minimum: {successful['timesteps'].min()}, "
-            f"maximum: {successful['timesteps'].max()} timesteps."
-        )
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Timesteps by episode")
-        render_locked_line_chart(
-            frame,
-            x="episode",
-            y="timesteps",
-            x_label="Test episode",
-            y_label="Timesteps used",
-        )
-    with c2:
-        st.subheader("Reward by episode")
-        render_locked_line_chart(
-            frame,
-            x="episode",
-            y="total_reward",
-            x_label="Test episode",
-            y_label="Total reward",
-        )
-
-    st.subheader("Detailed Episode Results")
-    st.dataframe(frame, hide_index=True, use_container_width=True)
-
-    render_episode_replay_visualizer(
-        env,
-        test_results,
-        f"{p}_te_replay",
-        room_num,
-        policy=res.policy,
-        values=res.values,
-        title="Test Episodes Replay & Animation",
-    )
-
-
-
 def render_models_page(room_num: int, *, show_header: bool = True) -> None:
     p = room_prefix(room_num)
     algo_names = {
@@ -2257,14 +2139,14 @@ def request_full_app_action(action_key: str, action: str) -> None:
 
 
 @st.fragment
-def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
+def render_room_controls(room_num: int) -> tuple[str, dict[str, bool]]:
     p = room_prefix(room_num)
     action_key = f"{p}_pending_control_action"
     pending_action = st.session_state.pop(action_key, None)
     algo_names = {1: "Policy Iteration", 2: "SARSA", 3: "Q-Learning"}
     st.sidebar.title(f"Room {room_num} Controls")
     st.sidebar.caption(f"Model • {algo_names[room_num]}")
-    environment_tab, training_tab, testing_tab, models_tab = render_control_section_tabs(
+    environment_tab, training_tab, models_tab = render_control_section_tabs(
         room_num,
         f"{p}_control_section",
         "Choose which controls are visible in the sidebar.",
@@ -2280,7 +2162,6 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
         "train": pending_action == "train",
         "reset": pending_action == "reset",
     }
-    run_test = pending_action == "test"
 
     with environment_tab:
         st.subheader("Grid layout")
@@ -2517,29 +2398,6 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
         ):
             request_full_app_action(action_key, "reset")
 
-    with testing_tab:
-        controls = st.session_state[f"{p}_test_controls"]
-        st.subheader("Test configuration")
-        episodes = st.number_input(
-            "Test episodes", 1, 10000, int(controls["episodes"]), key=f"{p}_test_episodes",
-            help="Number of evaluation episodes run without learning.",
-        )
-        max_steps = st.number_input(
-            "Max timesteps per episode", 1, 50000, int(controls["max_timesteps"]),
-            key=f"{p}_test_max_steps", help="Maximum length of each evaluation episode.",
-        )
-        seed = st.number_input(
-            "Test seed", 0, value=int(controls["seed"]), key=f"{p}_test_seed",
-            help="Reproduces the same stochastic test outcomes when settings are unchanged.",
-        )
-        st.session_state[f"{p}_test_controls"] = {"episodes": int(episodes), "max_timesteps": int(max_steps), "seed": int(seed)}
-        if st.button(
-            "🧪 Run test", type="primary", use_container_width=True,
-            disabled=st.session_state[f"{p}_result"] is None, key=f"{p}_run_test_btn",
-            help="Evaluates the current trained model without updating it.",
-        ):
-            request_full_app_action(action_key, "test")
-
     with models_tab:
         st.subheader("Model artifact")
         res = st.session_state[f"{p}_result"]
@@ -2600,11 +2458,11 @@ def render_room_controls(room_num: int) -> tuple[str, dict[str, bool], bool]:
                 st.success("Model loaded successfully!")
                 st.rerun()
 
-    return "All", requests, run_test
+    return "All", requests
 
 
 def render_room(room_num: int) -> None:
-    _section, requests, run_test = render_room_controls(room_num)
+    _section, requests = render_room_controls(room_num)
     room1_algo = st.session_state.get("room1_algorithm", "Policy Iteration")
     algorithms = {1: room1_algo, 2: "SARSA", 3: "Q-Learning"}
     descriptions = {
@@ -2634,13 +2492,6 @@ def render_room(room_num: int) -> None:
         training_section_slot = st.empty()
         with training_section_slot.container():
             render_training_page(room_num, requests, show_header=False)
-    with room_page_section(
-        room_num,
-        "testing",
-        "Deterministic testing",
-        "Evaluate the stored policy without learning and inspect episode-level results and replay.",
-    ):
-        render_test_page(room_num, run_test, show_header=False)
     with room_page_section(
         room_num,
         "models",
@@ -2686,10 +2537,6 @@ ROOM4_CONTROL_HELP = {
     "live_update": "Refresh live charts after this many episodes. Smaller values show finer progress but add UI overhead during training.",
     "train": "Start a new PPO training run with the current environment, rewards, network architecture, and hyperparameters.",
     "reset": "Remove the trained Room 4 model and its stored test results from this browser session. Environment settings are kept.",
-    "test_episodes": "Number of evaluation episodes run with deterministic greedy policy actions.",
-    "test_timesteps": "Maximum actions allowed in each evaluation episode before it is marked unfinished.",
-    "test_seed": "Seed reserved for reproducible evaluation. The current Room 4 environment is deterministic, but the setting keeps the test configuration explicit.",
-    "run_test": "Evaluate the trained network without exploratory sampling and record metrics, action choices, and replay trajectories.",
     "download": "Download the trained network weights, environment, hyperparameters, metrics, duration, and action counts as a JSON artifact.",
     "upload": "Select a Room 4 PPO JSON artifact previously downloaded from this dashboard.",
     "load": "Validate the selected artifact and restore its environment, network weights, configuration, and training results.",
@@ -2724,7 +2571,6 @@ def _redistribute_room4_pipes() -> None:
     st.session_state.room4_result = None
     st.session_state.room4_result_environment = None
     st.session_state.room4_algorithm_config = None
-    st.session_state.room4_test_results = None
 
 
 def _room4_action_dataframe(action_counts: dict[str, int]) -> pd.DataFrame:
@@ -2749,11 +2595,11 @@ def build_room4_environment() -> Room4Environment:
     )
     return Room4Environment(config)
 
-def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
+def render_room4_controls() -> tuple[str, dict[str, bool]]:
     action_key = "room4_pending_control_action"
     pending_action = st.session_state.pop(action_key, None)
     st.sidebar.title("Room 4 Controls (PPO)")
-    environment_tab, training_tab, testing_tab, models_tab = render_control_section_tabs(
+    environment_tab, training_tab, models_tab = render_control_section_tabs(
         4,
         "room4_control_section",
         ROOM4_CONTROL_HELP["section"],
@@ -2763,7 +2609,6 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
         "train": pending_action == "train",
         "reset": pending_action == "reset",
     }
-    run_test = pending_action == "test"
 
     with environment_tab:
         st.subheader("Flappy Bird pipe obstacles")
@@ -2835,7 +2680,6 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
             st.session_state.room4_result = None
             st.session_state.room4_result_environment = None
             st.session_state.room4_algorithm_config = None
-            st.session_state.room4_test_results = None
 
         st.subheader("Reward structure")
         rewards = dict(st.session_state.room4_reward_values)
@@ -2872,7 +2716,6 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
             st.session_state.room4_result = None
             st.session_state.room4_result_environment = None
             st.session_state.room4_algorithm_config = None
-            st.session_state.room4_test_results = None
 
     with training_tab:
         controls = st.session_state.room4_training_controls
@@ -2922,21 +2765,6 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
         if st.button("Reset trained model", icon=":material/restart_alt:", width="stretch", key="r4_reset_btn", help=ROOM4_CONTROL_HELP["reset"]):
             request_full_app_action(action_key, "reset")
 
-    with testing_tab:
-        controls = st.session_state.room4_test_controls
-        st.subheader("Test configuration")
-        episodes = st.number_input("Test episodes", 1, 1000, int(controls["episodes"]), key="r4_test_episodes", help=ROOM4_CONTROL_HELP["test_episodes"])
-        max_steps = st.number_input("Maximum timesteps per episode", 10, 5000, int(controls["max_timesteps"]), key="r4_test_max_steps", help=ROOM4_CONTROL_HELP["test_timesteps"])
-        seed = st.number_input("Test seed", 0, value=int(controls["seed"]), key="r4_test_seed", help=ROOM4_CONTROL_HELP["test_seed"])
-
-        st.session_state.room4_test_controls = {"episodes": int(episodes), "max_timesteps": int(max_steps), "seed": int(seed)}
-        if st.button(
-            "Run test", icon=":material/science:", type="primary", width="stretch",
-            disabled=st.session_state.room4_result is None, key="r4_run_test_btn",
-            help=ROOM4_CONTROL_HELP["run_test"],
-        ):
-            request_full_app_action(action_key, "test")
-
     with models_tab:
         st.subheader("Model artifact")
         res = st.session_state.room4_result
@@ -2984,7 +2812,7 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
         if st.session_state.pop("r4_load_success", None):
             st.success("Room 4 PPO model loaded successfully!")
 
-    return "All", requests, run_test
+    return "All", requests
 
 
 def _render_room4_training_summary(result: Any, *, show_charts: bool = True) -> None:
@@ -3037,7 +2865,6 @@ def _render_room4_training_summary(result: Any, *, show_charts: bool = True) -> 
 def _render_room4_section(
     section: str,
     requests: dict[str, bool],
-    run_test: bool,
 ) -> None:
     if section == "Environment":
         env = build_room4_environment()
@@ -3064,7 +2891,6 @@ def _render_room4_section(
             st.session_state.room4_result = None
             st.session_state.room4_result_environment = None
             st.session_state.room4_algorithm_config = None
-            st.session_state.room4_test_results = None
             st.success("Trained Room 4 model reset.")
 
         training_notice = st.session_state.pop("room4_training_notice", None)
@@ -3075,7 +2901,6 @@ def _render_room4_section(
             st.session_state.room4_result = None
             st.session_state.room4_result_environment = None
             st.session_state.room4_algorithm_config = None
-            st.session_state.room4_test_results = None
             st.session_state.pop("room4_training_notice", None)
             for replay_key in (
                 "room4_tr_replay_select",
@@ -3140,7 +2965,6 @@ def _render_room4_section(
             st.session_state.room4_result = result
             st.session_state.room4_result_environment = env
             st.session_state.room4_algorithm_config = config
-            st.session_state.room4_test_results = None
             duration_label = _format_training_duration(result.training_duration_seconds)
             st.success(f"PPO training complete in {duration_label}.")
             for replay_key in (
@@ -3155,63 +2979,6 @@ def _render_room4_section(
             _render_room4_training_summary(res, show_charts=not requests["train"])
         else:
             st.info("Click '▶ Train PPO Agent' in the left sidebar to start training.")
-
-    elif section == "Testing":
-        if run_test:
-            res = st.session_state.room4_result
-            env = st.session_state.room4_result_environment
-            if res and env:
-                t_ctrls = st.session_state.room4_test_controls
-                test_results = evaluate_room4_ppo(
-                    environment=env,
-                    policy_net=res.policy_net,
-                    episodes=t_ctrls["episodes"],
-                    max_timesteps=t_ctrls["max_timesteps"],
-                    seed=t_ctrls["seed"],
-                )
-                st.session_state.room4_test_results = test_results
-
-        test_res = st.session_state.room4_test_results
-        env = st.session_state.room4_result_environment
-        if test_res and env:
-            st.subheader("Test execution summary")
-            df_test = pd.DataFrame([
-                {
-                    "Episode": ep.episode,
-                    "Success": ep.success,
-                    "Timesteps": ep.timesteps,
-                    "Total Reward": ep.total_reward,
-                    "Pipes Passed": ep.pipes_passed,
-                }
-                for ep in test_res
-            ])
-            success_rate = (df_test["Success"].sum() / len(df_test)) * 100.0
-            st.metric("Test success rate", f"{success_rate:.1f}%")
-            st.dataframe(df_test, width="stretch")
-
-            test_action_counts = {action.name: 0 for action in Action4}
-            for episode in test_res:
-                for step in episode.trajectory:
-                    test_action_counts[step.action.name] += 1
-            st.subheader("Test action distribution")
-            render_locked_bar_chart(
-                _room4_action_dataframe(test_action_counts),
-                x="Action",
-                y="Selections",
-                x_label="Action",
-                y_label="Number of selections",
-            )
-
-            render_episode_replay_visualizer(
-                env,
-                test_res,
-                "room4_te_replay",
-                4,
-                title="Test Episodes Replay & Animation",
-            )
-        else:
-            st.info("Run a test from the left sidebar to view test metrics and replay trajectories.")
-
 
     else:  # Models
         res = st.session_state.room4_result
@@ -3239,7 +3006,7 @@ def _render_room4_section(
 
 
 def render_room4() -> None:
-    _section, requests, run_test = render_room4_controls()
+    _section, requests = render_room4_controls()
     render_room_page_header(
         4,
         "Continuous Flappy Bird workspace",
@@ -3252,7 +3019,7 @@ def render_room4() -> None:
         "Environment and observation space",
         "Review the continuous 10×10 room, the discrete velocity actions, and every configured pipe.",
     ):
-        _render_room4_section("Environment", {"train": False, "reset": False}, False)
+        _render_room4_section("Environment", {"train": False, "reset": False})
     with room_page_section(
         4,
         "training",
@@ -3261,21 +3028,14 @@ def render_room4() -> None:
     ):
         training_section_slot = st.empty()
         with training_section_slot.container():
-            _render_room4_section("Training", requests, False)
-    with room_page_section(
-        4,
-        "testing",
-        "Policy testing and replay",
-        "Run deterministic evaluation from the sidebar and inspect every recorded flight here.",
-    ):
-        _render_room4_section("Testing", {"train": False, "reset": False}, run_test)
+            _render_room4_section("Training", requests)
     with room_page_section(
         4,
         "models",
         "Model and network information",
         "Inspect the active PPO network; download and upload actions stay in the sidebar.",
     ):
-        _render_room4_section("Models", {"train": False, "reset": False}, False)
+        _render_room4_section("Models", {"train": False, "reset": False})
 
 
 # =====================================================================
@@ -3316,9 +3076,7 @@ ROOM5_HELP = {
     "activation": "Non-linear function used between hidden layers. Tanh is a common stable choice for PPO.",
     "train_seed": "Controls neural-network initialization and sampled PPO actions for reproducible experiments.",
     "live": "Refresh live graphs every N episodes. Smaller values provide finer feedback but add dashboard overhead.",
-    "test_episodes": "Number of greedy evaluation episodes with no sampled exploration.",
     "test_steps": "Maximum decisions allowed in each evaluation episode.",
-    "test_seed": "Controls evaluation traffic generation so results can be reproduced.",
 }
 
 
@@ -3326,7 +3084,6 @@ def _invalidate_room5_model() -> None:
     st.session_state.room5_result = None
     st.session_state.room5_result_environment = None
     st.session_state.room5_algorithm_config = None
-    st.session_state.room5_test_results = None
 
 
 def build_room5_environment() -> Room5Environment:
@@ -3355,11 +3112,11 @@ def _room5_action_dataframe(action_counts: dict[str, int]) -> pd.DataFrame:
     )
 
 
-def render_room5_controls() -> tuple[str, dict[str, bool], bool]:
+def render_room5_controls() -> tuple[str, dict[str, bool]]:
     action_key = "room5_pending_control_action"
     pending_action = st.session_state.pop(action_key, None)
     st.sidebar.title("Room 5 Controls (PPO)")
-    environment_tab, training_tab, testing_tab, models_tab = render_control_section_tabs(
+    environment_tab, training_tab, models_tab = render_control_section_tabs(
         5,
         "room5_control_section",
         ROOM5_HELP["section"],
@@ -3368,7 +3125,6 @@ def render_room5_controls() -> tuple[str, dict[str, bool], bool]:
         "train": pending_action == "train",
         "reset": pending_action == "reset",
     }
-    run_test = pending_action == "test"
 
     with environment_tab:
         controls = dict(st.session_state.room5_environment_controls)
@@ -3477,16 +3233,6 @@ def render_room5_controls() -> tuple[str, dict[str, bool], bool]:
         if st.button("Reset trained model", icon=":material/restart_alt:", width="stretch", key="r5_reset", help="Remove the Room 5 model and test results from this browser session."):
             request_full_app_action(action_key, "reset")
 
-    with testing_tab:
-        controls = st.session_state.room5_test_controls
-        st.subheader("Test configuration")
-        episodes = st.number_input("Test episodes", 1, 1000, int(controls["episodes"]), key="r5_test_episodes", help=ROOM5_HELP["test_episodes"])
-        max_timesteps = st.number_input("Maximum timesteps per episode", 10, 5000, int(controls["max_timesteps"]), key="r5_test_steps", help=ROOM5_HELP["test_steps"])
-        seed = st.number_input("Test seed", 0, value=int(controls["seed"]), key="r5_test_seed", help=ROOM5_HELP["test_seed"])
-        st.session_state.room5_test_controls = {"episodes": int(episodes), "max_timesteps": int(max_timesteps), "seed": int(seed)}
-        if st.button("Run test", icon=":material/science:", type="primary", width="stretch", disabled=st.session_state.room5_result is None, key="r5_run_test", help="Evaluate the trained PPO policy greedily and record metrics and replay trajectories."):
-            request_full_app_action(action_key, "test")
-
     with models_tab:
         result = st.session_state.room5_result
         environment = st.session_state.room5_result_environment
@@ -3504,7 +3250,6 @@ def render_room5_controls() -> tuple[str, dict[str, bool], bool]:
                 st.session_state.room5_result = result
                 st.session_state.room5_result_environment = environment
                 st.session_state.room5_algorithm_config = algorithm_config
-                st.session_state.room5_test_results = None
                 config = environment.config
                 st.session_state.room5_environment_controls = {
                     "lane_count": config.lane_count, "vision_distance": config.vision_distance,
@@ -3519,7 +3264,7 @@ def render_room5_controls() -> tuple[str, dict[str, bool], bool]:
                 st.success("Room 5 PPO model loaded successfully.")
                 st.rerun()
 
-    return "All", requests, run_test
+    return "All", requests
 
 
 def _render_room5_training_summary(
@@ -3567,7 +3312,6 @@ def _render_room5_training_summary(
 def _render_room5_section(
     section: str,
     requests: dict[str, bool],
-    run_test: bool,
 ) -> None:
     if section == "Environment":
         environment = build_room5_environment()
@@ -3649,7 +3393,6 @@ def _render_room5_section(
             st.session_state.room5_result = result
             st.session_state.room5_result_environment = environment
             st.session_state.room5_algorithm_config = config
-            st.session_state.room5_test_results = None
             duration = _format_training_duration(result.training_duration_seconds)
             st.success(f"PPO training complete in {duration}.")
             for replay_key in (
@@ -3667,55 +3410,6 @@ def _render_room5_section(
             )
         else:
             st.info("Use the left sidebar to configure and train the Room 5 PPO agent.")
-
-    elif section == "Testing":
-        if run_test:
-            result = st.session_state.room5_result
-            environment = st.session_state.room5_result_environment
-            if result and environment:
-                controls = st.session_state.room5_test_controls
-                with st.spinner("Evaluating PPO policy..."):
-                    st.session_state.room5_test_results = evaluate_room5_ppo(
-                        environment, result.policy_net,
-                        episodes=controls["episodes"], max_timesteps=controls["max_timesteps"], seed=controls["seed"],
-                    )
-
-        results = st.session_state.room5_test_results
-        environment = st.session_state.room5_result_environment
-        if results and environment:
-            table = pd.DataFrame(
-                [{"Episode": item.episode, "Success": item.success, "Collision": item.collision,
-                  "Timesteps": item.timesteps, "Total reward": item.total_reward, "Overtakes": item.overtakes}
-                 for item in results]
-            )
-            with st.container(horizontal=True):
-                st.metric("Success rate", f"{100.0 * table['Success'].mean():.1f}%", border=True)
-                st.metric("Collision rate", f"{100.0 * table['Collision'].mean():.1f}%", border=True)
-                st.metric("Mean overtakes", f"{table['Overtakes'].mean():.2f}", border=True)
-                st.metric("Mean reward", f"{table['Total reward'].mean():.2f}", border=True)
-            charts = st.columns(2)
-            with charts[0]:
-                st.caption("**Test reward by episode**")
-                render_locked_line_chart(table, x="Episode", y="Total reward", x_label="Episode", y_label="Total reward")
-            action_counts = {action.name: 0 for action in Action5}
-            for episode in results:
-                for step in episode.trajectory:
-                    action_counts[step.action.name] += 1
-            with charts[1]:
-                st.caption("**Test action distribution**")
-                render_locked_bar_chart(_room5_action_dataframe(action_counts), x="Action", y="Selections", x_label="Action", y_label="Number of selections")
-            st.dataframe(table, width="stretch")
-
-            render_episode_replay_visualizer(
-                environment,
-                results,
-                "room5_te_replay",
-                5,
-                title="Test Episodes Replay & Animation",
-            )
-        else:
-            st.info("Train a Room 5 model and run a test to view evaluation metrics and replay trajectories.")
-
 
     else:
         result = st.session_state.room5_result
@@ -3743,7 +3437,7 @@ def _render_room5_section(
 
 
 def render_room5() -> None:
-    _section, requests, run_test = render_room5_controls()
+    _section, requests = render_room5_controls()
     render_room_page_header(
         5,
         "One-way traffic avoidance workspace",
@@ -3756,7 +3450,7 @@ def render_room5() -> None:
         "Road environment and agent vision",
         "See the full road while the agent observes only the nearest vehicle in its own forward lane.",
     ):
-        _render_room5_section("Environment", {"train": False, "reset": False}, False)
+        _render_room5_section("Environment", {"train": False, "reset": False})
     with room_page_section(
         5,
         "training",
@@ -3765,21 +3459,14 @@ def render_room5() -> None:
     ):
         training_section_slot = st.empty()
         with training_section_slot.container():
-            _render_room5_section("Training", requests, False)
-    with room_page_section(
-        5,
-        "testing",
-        "Safety testing and episode replay",
-        "Run deterministic road tests from the sidebar and compare success, collision, reward, and behavior.",
-    ):
-        _render_room5_section("Testing", {"train": False, "reset": False}, run_test)
+            _render_room5_section("Training", requests)
     with room_page_section(
         5,
         "models",
         "Model and network information",
         "Inspect the active observation schema and PPO network; model file actions stay in the sidebar.",
     ):
-        _render_room5_section("Models", {"train": False, "reset": False}, False)
+        _render_room5_section("Models", {"train": False, "reset": False})
 
 
 def render_future_room(room_name: str) -> None:
