@@ -6,14 +6,15 @@ The system is a single Streamlit application:
 
 1. The browser renders the English dashboard and grid visualization as HTML.
 2. A full-width sticky top bar keeps the project brand on the left, Room 1–5 navigation centered from left to right, and Streamlit's Deploy and menu controls aligned on the right.
-3. Each room renders one long-form dashboard page. Environment, Training, Testing, and Model panels are always present; four compact sticky buttons share one sidebar row, change the available controls, and scroll to the matching panel.
-4. A room-specific vertical control bar appears on the left and contains the relevant environment, reward, hyperparameter, training, testing, and model controls. Each reward uses a compact same-row checkbox to enable or disable its contribution.
-5. Rooms 1–3 render every grid cell as a popover editor for Normal, Icy, and Wall types. The same editor assigns the start, main goal, extra termination states, and per-cell rewards. Icy cells expose a whole-number percentage distribution totaling 100%.
-6. Every room's Environment view presents the algorithm contract before the visualization: observation/input, learned output, and available actions.
-7. Training and test plots are rendered as fixed-axis Altair charts, preserving tooltips while disabling pan and zoom.
-8. Streamlit sends user actions to the server-side Python application.
-9. The environments and reinforcement-learning algorithms run in Python and remain independent of the UI.
-10. Streamlit receives the results and renders the dog, policies, labeled live training charts, labeled test charts, and automatic episode replays at five base timesteps per second.
+3. Each room renders one long-form dashboard page. Environment, Training, Testing, and Model panels are always present; four compact sticky tabs share one sidebar row and switch only the sidebar controls client-side, without rerunning or scrolling the main page.
+4. High-frequency interactions are fragment-scoped: sidebar values, grid-cell edits, and replay controls rerun only their own UI region. Expensive Train/Test/Reset actions are queued as one-shot requests and trigger a single full app run so the Python server can update the main dashboard.
+5. A room-specific vertical control bar appears on the left and contains the relevant environment, reward, hyperparameter, training, testing, and model controls. Each reward uses a compact same-row checkbox to enable or disable its contribution.
+6. Rooms 1–3 render every grid cell as an atomic Submit form inside a popover. The form batches Normal/Icy/Wall type, start and goal roles, termination, per-cell reward, and a directional cross of whole-number icy probabilities totaling 100%.
+7. Every room's Environment view presents the algorithm contract before the visualization: observation/input, learned output, and available actions.
+8. Training and test plots are rendered as fixed-axis Altair charts, preserving tooltips while disabling pan and zoom.
+9. Streamlit sends user actions to the server-side Python application.
+10. The environments and reinforcement-learning algorithms run in Python and remain independent of the UI.
+11. Streamlit receives the results and renders the agents, policies, labeled live training charts, labeled test charts, and configurable-speed episode replays.
 
 Rooms 1–3 are grid environments. Rooms 4 & 5 use continuous and driving environments trained with PPO.
 

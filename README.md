@@ -12,12 +12,13 @@ A reinforcement-learning final project built as a five-room escape game. Each ro
 - Each room has a dedicated left control bar for environment settings, rewards, hyperparameters, training, testing, and model management.
 - Every Environment page begins with a compact explanation of the room's RL algorithm, observation/input, model output, and available actions.
 - Training and test charts use fixed axes: hover tooltips remain available, while pan and zoom are disabled.
-- Rooms 1–3 include a clickable 10x10 grid editor. A cell popover controls its type, custom reward, termination behavior, and assignment as the dog start or main goal.
-- Icy transition probabilities are edited as whole percentages that must total 100%.
+- Rooms 1–3 include a clickable 10x10 grid editor. Each cell popover batches type, role, termination, and reward edits into one atomic Submit action.
+- Icy transition probabilities are edited as whole percentages in a directional cross—Up above, Left/Reach/Right across the center, and Down below—and must total 100% before Submit is accepted.
 - A single seeded generator creates the start, goal, walls, icy cells, and integer ice distributions together.
 - Every control includes contextual help, all charts identify both axes, and training charts are displayed side by side.
 - Reward controls accept unrestricted positive or negative values. Every reward has a compact same-row checkbox that enables or disables its effect, while the label and numeric value remain on one line where space permits.
-- Every room is a single continuous dashboard page with Environment, Training, Testing, and Model sections. Four compact sticky sidebar buttons share one row, change the visible controls, and smoothly jump to the matching page section.
+- Every room is a single continuous dashboard page with Environment, Training, Testing, and Model sections. Four compact sticky sidebar tabs share one row and switch only the sidebar controls client-side, without rerunning or scrolling the main page.
+- Sidebar controls, grid-cell editing, and episode replay run in isolated Streamlit fragments, so ordinary value changes and replay steps do not rebuild the full dashboard. Train, Test, Reset, and model-loading actions request one full server run only when the main results must change.
 - Test replays play automatically at a base rate of five timesteps per second with a selectable speed multiplier.
 
 - Room 4 is a continuous Flappy Bird environment trained with PPO. Every action selects discrete X/Y velocity components from `{-1, 0, +1}`; its configurable reward model includes dedicated penalties for HOVER and for any action without rightward movement.

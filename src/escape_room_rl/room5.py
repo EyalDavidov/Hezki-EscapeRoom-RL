@@ -10,9 +10,10 @@ import numpy as np
 
 MAX_LANES = 6
 MIN_TRAFFIC_CLEARANCE_METERS = 3.0
-# Six values identify the agent's own lane. The remaining three values describe
-# only that lane: nearest-car distance, closing speed, and road progress.
-OBSERVATION_SIZE = MAX_LANES + 3
+SPAWN_DISTANCE = 120.0
+# Six values identify the agent's own lane. The remaining 7 values describe
+# the left, current, and right lanes (distance & closing speed), plus road progress.
+OBSERVATION_SIZE = MAX_LANES + 7
 RoadObservation = tuple[float, ...]
 
 
@@ -55,8 +56,8 @@ DEFAULT_ROOM5_REWARDS: dict[str, float] = {
 @dataclass
 class Room5Config:
     lane_count: int = 4
-    vision_distance: float = 120.0
-    road_length: float = 600.0
+    vision_distance: float = 50.0
+    road_length: float = 50.0
     dt: float = 0.2
     ego_speed: float = 30.0
     traffic_speed_min: float = 12.0
@@ -127,7 +128,7 @@ class Room5Environment:
 
     def _spawn_interval(self) -> float:
         """Space arrivals so the road fills progressively instead of at reset."""
-        density_interval = self.config.vision_distance / (
+        density_interval = SPAWN_DISTANCE / (
             self.config.ego_speed * max(1, self.config.traffic_count)
         )
         return float(max(0.5, min(2.0, density_interval)))
@@ -139,10 +140,10 @@ class Room5Environment:
         )
         lane_farthest = max(
             [car.distance for car in self.traffic if car.lane == lane]
-            + [self.config.vision_distance]
+            + [SPAWN_DISTANCE]
         )
         distance = max(
-            self.config.vision_distance * 1.05,
+            SPAWN_DISTANCE * 1.05,
             lane_farthest + minimum_center_spacing,
         ) + float(self._rng.uniform(0.0, minimum_center_spacing * 0.35))
         car = TrafficCar(
@@ -211,32 +212,34 @@ class Room5Environment:
             traffic=tuple(sorted(self.traffic, key=lambda car: car.distance)),
         )
 
+    def _get_lane_observation(self, lane_idx: int) -> tuple[float, float]:
+        if lane_idx < 0 or lane_idx >= self.config.lane_count:
+            return 1.0, 0.0
+        
+        visible = [
+            car for car in self.traffic
+            if car.lane == lane_idx
+            and 0.0 <= self.forward_clearance(car) <= self.config.vision_distance
+        ]
+        if visible:
+            nearest = min(visible, key=self.forward_clearance)
+            dist = float(self.forward_clearance(nearest) / self.config.vision_distance)
+            speed = float((self.config.ego_speed - nearest.speed) / self.config.ego_speed)
+            return dist, speed
+        return 1.0, 0.0
+
     def observation(self) -> RoadObservation:
         one_hot_lane = [0.0] * MAX_LANES
         one_hot_lane[self.ego_lane] = 1.0
 
-        visible_in_current_lane = [
-            car
-            for car in self.traffic
-            if car.lane == self.ego_lane
-            and 0.0 <= self.forward_clearance(car) <= self.config.vision_distance
-        ]
-        if visible_in_current_lane:
-            nearest = min(visible_in_current_lane, key=self.forward_clearance)
-            nearest_distance = float(
-                self.forward_clearance(nearest) / self.config.vision_distance
-            )
-            closing_speed = float(
-                (self.config.ego_speed - nearest.speed) / self.config.ego_speed
-            )
-        else:
-            nearest_distance = 1.0
-            closing_speed = 0.0
+        left_dist, left_speed = self._get_lane_observation(self.ego_lane - 1)
+        curr_dist, curr_speed = self._get_lane_observation(self.ego_lane)
+        right_dist, right_speed = self._get_lane_observation(self.ego_lane + 1)
 
         progress = min(1.0, self.progress / self.config.road_length)
         return tuple(
             one_hot_lane
-            + [nearest_distance, closing_speed, float(progress)]
+            + [left_dist, left_speed, curr_dist, curr_speed, right_dist, right_speed, float(progress)]
         )
 
     def step(self, action: Action5) -> Room5Transition:

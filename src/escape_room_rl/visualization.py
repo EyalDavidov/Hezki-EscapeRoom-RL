@@ -276,7 +276,8 @@ def render_room5_html(
         return road_left + (lane + 0.5) * lane_width
 
     def distance_y(distance: float) -> float:
-        ratio = max(-0.04, min(1.0, distance / environment.config.vision_distance))
+        # The screen visually represents a fixed 50.0 meters ahead
+        ratio = max(-0.04, min(1.0, distance / 50.0))
         return ego_y - ratio * visible_height
 
     def car_svg(x: float, y: float, color: str, *, ego: bool = False) -> str:
@@ -314,16 +315,25 @@ def render_room5_html(
         )
 
     ego_x = lane_center(snapshot.ego_lane)
-    view_left = road_left + snapshot.ego_lane * lane_width + 6
-    view_right = view_left + lane_width - 12
-    view_near_y = ego_y - 34
-    elements.extend(
-        [
-            f'<polygon points="{ego_x - 14:.1f},{view_near_y:.1f} {ego_x + 14:.1f},{view_near_y:.1f} {view_right:.1f},{horizon_y:.1f} {view_left:.1f},{horizon_y:.1f}" fill="#38bdf8" opacity="0.18" stroke="#7dd3fc" stroke-width="2" stroke-dasharray="7,5" />',
-            f'<line x1="{view_left:.1f}" y1="{horizon_y:.1f}" x2="{view_right:.1f}" y2="{horizon_y:.1f}" stroke="#38bdf8" stroke-width="4" />',
-            f'<text x="{ego_x:.1f}" y="{horizon_y - 12:.1f}" text-anchor="middle" fill="#e0f2fe" font-size="12" font-weight="800">CURRENT-LANE VIEW • {environment.config.vision_distance:.0f}m</text>',
+    view_near_y = ego_y - 29  # Top of ego car (58/2)
+    view_far_y = distance_y(environment.config.vision_distance)
+
+    def draw_view_cone(lane: int, color: str, text: str):
+        if lane < 0 or lane >= environment.config.lane_count:
+            return []
+        cx = lane_center(lane)
+        left = cx - lane_width / 2 + 6
+        right = left + lane_width - 12
+        # Taper the cone slightly towards the top
+        return [
+            f'<polygon points="{ego_x - 14:.1f},{view_near_y:.1f} {ego_x + 14:.1f},{view_near_y:.1f} {right - 5:.1f},{view_far_y:.1f} {left + 5:.1f},{view_far_y:.1f}" fill="{color}" opacity="0.12" stroke="{color}" stroke-width="1.5" stroke-dasharray="6,4" />',
+            f'<line x1="{left + 5:.1f}" y1="{view_far_y:.1f}" x2="{right - 5:.1f}" y2="{view_far_y:.1f}" stroke="{color}" stroke-width="3" opacity="0.5" />',
+            f'<text x="{cx:.1f}" y="{view_far_y - 12:.1f}" text-anchor="middle" fill="{color}" font-size="10" font-weight="800" opacity="0.8">{text}</text>'
         ]
-    )
+
+    elements.extend(draw_view_cone(snapshot.ego_lane, "#38bdf8", "CURRENT"))
+    elements.extend(draw_view_cone(snapshot.ego_lane - 1, "#f472b6", "LEFT"))
+    elements.extend(draw_view_cone(snapshot.ego_lane + 1, "#f472b6", "RIGHT"))
 
     elements.extend(
         [
@@ -341,16 +351,27 @@ def render_room5_html(
         <= car.distance
         <= environment.config.vision_distance + environment.config.car_length
     ]
-    closest_ahead = min(
-        (
-            car
-            for car in visible_traffic
-            if environment.forward_clearance(car) >= 0.0
-            and car.lane == snapshot.ego_lane
-        ),
-        key=environment.forward_clearance,
-        default=None,
-    )
+    def get_closest(lane: int):
+        if lane < 0 or lane >= environment.config.lane_count:
+            return None
+        return min(
+            (
+                car for car in visible_traffic
+                if environment.forward_clearance(car) >= 0.0 and car.lane == lane
+            ),
+            key=environment.forward_clearance,
+            default=None,
+        )
+
+    closest_cars = {
+        car.car_id: car
+        for car in [
+            get_closest(snapshot.ego_lane),
+            get_closest(snapshot.ego_lane - 1),
+            get_closest(snapshot.ego_lane + 1)
+        ] if car
+    }
+
     for car in sorted(visible_traffic, key=lambda item: item.distance, reverse=True):
         car_x = lane_center(car.lane)
         car_y = distance_y(car.distance)
@@ -361,14 +382,22 @@ def render_room5_html(
                 traffic_colors[car.car_id % len(traffic_colors)],
             )
         )
-        if closest_ahead is not None and car.car_id == closest_ahead.car_id:
-            label_x = car_x + (42 if car_x + 78 < road_right else -42)
-            label_y = max(horizon_y + 18, car_y - 31)
-            distance_label = f"{environment.forward_clearance(car):.1f} m"
+        if car.car_id in closest_cars:
+            # Draw distance line from top of agent to bottom of car
+            bottom_of_car = car_y + 26
+            top_of_ego = ego_y - 29
+            mid_y = (bottom_of_car + top_of_ego) / 2
+            
+            # The line
+            elements.append(f'<line x1="{car_x:.1f}" y1="{bottom_of_car:.1f}" x2="{car_x:.1f}" y2="{top_of_ego:.1f}" stroke="#facc15" stroke-width="2" stroke-dasharray="4,4" opacity="0.7" />')
+            
+            # Distance label
+            label_x = car_x + (35 if car_x + 78 < road_right else -35)
+            distance_label = f"{environment.forward_clearance(car):.1f}m"
             elements.extend(
                 [
-                    f'<rect x="{label_x - 30:.1f}" y="{label_y - 15:.1f}" width="60" height="23" rx="7" fill="#0f172a" stroke="#38bdf8" stroke-width="1.5" opacity="0.94" />',
-                    f'<text x="{label_x:.1f}" y="{label_y + 1:.1f}" text-anchor="middle" fill="#e0f2fe" font-size="12" font-weight="800" aria-label="Nearest car distance {distance_label}">{distance_label}</text>',
+                    f'<rect x="{label_x - 24:.1f}" y="{mid_y - 12:.1f}" width="48" height="20" rx="5" fill="#0f172a" stroke="#facc15" stroke-width="1" opacity="0.9" />',
+                    f'<text x="{label_x:.1f}" y="{mid_y + 3:.1f}" text-anchor="middle" fill="#fef08a" font-size="11" font-weight="800">{distance_label}</text>',
                 ]
             )
 

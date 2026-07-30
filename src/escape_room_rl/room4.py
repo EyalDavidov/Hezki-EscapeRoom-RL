@@ -159,9 +159,11 @@ class Room4Environment:
         self.config = config or Room4Config()
         self.config.validate()
         self.current_state: State4 = self.config.start
+        self.passed_pipes: set[int] = set()
 
     def reset(self, seed: int | None = None) -> State4:
         self.current_state = self.config.start
+        self.passed_pipes = set()
         return self.current_state
 
     def is_terminal(self, state: State4) -> bool:
@@ -228,14 +230,15 @@ class Room4Environment:
 
         # Pipe collision & passing check
         if not done:
-            for pipe in self.config.pipes:
+            for i, pipe in enumerate(self.config.pipes):
                 if pipe.collides_with(new_x, new_y, self.config.bird_radius):
                     done = True
                     events.append("collision")
                     reward += self.config.rewards.get("collision", -20.0)
                     break
                 # Check if passed pipe in this step
-                if x < pipe.x <= new_x:
+                if x < pipe.x <= new_x and i not in self.passed_pipes:
+                    self.passed_pipes.add(i)
                     events.append("pipe_passed")
                     reward += self.config.rewards.get("pipe_passed", 5.0)
 
