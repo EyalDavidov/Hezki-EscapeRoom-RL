@@ -73,13 +73,13 @@ DEFAULT_ROOM4_PIPES: list[PipeObstacle] = [
 
 DEFAULT_ROOM4_REWARDS: dict[str, float] = {
     "step": -0.05,
-    "progress": 0.5,
-    "backward": 0.0,
-    "hover": -0.1,
+    "progress": 1.0,
+    "backward": -0.1,
+    "hover": -0.2,
     "non_right": -0.1,
-    "pipe_passed": 5.0,
-    "goal_reached": 20.0,
-    "collision": -20.0,
+    "pipe_passed": 8.0,
+    "goal_reached": 30.0,
+    "collision": -30.0,
 }
 
 

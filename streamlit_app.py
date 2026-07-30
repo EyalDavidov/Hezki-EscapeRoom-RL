@@ -844,17 +844,17 @@ def initialize_state() -> None:
             "value_coefficient": 0.5,
             "update_epochs": 4,
             "mini_batch_size": 64,
-            "episodes": 300,
-            "max_timesteps": 500,
+            "episodes": 400,
+            "max_timesteps": 700,
             "hidden_layers": 2,
             "hidden_units": 64,
-            "activation_fn": "Tanh",
+            "activation_fn": "ReLU",
             "seed": 42,
             "live_update_every": 10,
         },
         "room4_test_controls": {
             "episodes": 50,
-            "max_timesteps": 500,
+            "max_timesteps": 700,
             "seed": 123,
         },
         # Room 5 (PPO - one-way traffic avoidance)
@@ -1049,7 +1049,7 @@ def render_algorithm_overview(room_num: int) -> None:
         5: {
             "algorithm": "PPO actor-critic",
             "summary": "A neural policy-gradient algorithm that learns lane selection and overtaking from a fixed-size road observation.",
-            "input": "9 values: six indicators for the agent's own lane, the front-to-rear edge clearance and closing speed for the nearest car in that lane only, and road progress. Adjacent-lane cars are not observed.",
+            "input": "13 values: Agent lane (one-hot), Progress, and Clearance/Speed for left, current & right lanes.",
             "output": "Probabilities for three driving actions plus a critic estimate of the current state's expected return.",
             "actions": "LEFT lane change, KEEP_LANE, and RIGHT lane change.",
         },
@@ -1702,14 +1702,8 @@ def render_episode_replay_visualizer(
             extra = f", Overtakes: {ep.overtakes}"
         elif hasattr(ep, "slipped_count") and ep.slipped_count > 0:
             extra = f", Slips: {ep.slipped_count}"
-        return f"Episode {getattr(ep, 'episode', index + 1)} · {status_str} · R {reward_val:.2f}{extra}"
+        return f"Episode {getattr(ep, 'episode', index + 1)} • {status_str} • R {reward_val:.2f}{extra}"
 
-    def on_ep_change() -> None:
-        st.session_state[f"{key_prefix}_is_playing"] = False
-        st.session_state[f"{key_prefix}_step"] = 0
-
-    step_key = f"{key_prefix}_step"
-    playing_key = f"{key_prefix}_is_playing"
     ep_select_key = f"{key_prefix}_select"
 
     visual_column, control_column = st.columns(
@@ -1717,8 +1711,6 @@ def render_episode_replay_visualizer(
         gap="medium",
         vertical_alignment="top",
     )
-    with visual_column:
-        replay_frame = st.empty()
 
     with control_column:
         with st.container(border=True, key=f"replay_panel_{key_prefix}"):
@@ -1727,200 +1719,176 @@ def render_episode_replay_visualizer(
                 options=list(range(len(episodes))),
                 format_func=format_ep_option,
                 key=ep_select_key,
-                on_change=on_ep_change,
                 help="Choose which recorded episode to replay.",
             )
-
             selected_ep = episodes[selected_idx]
             trajectory = getattr(selected_ep, "trajectory", [])
-            if not trajectory:
-                replay_frame.info("This episode has an empty trajectory.")
-                return
+            
+            # Clean up deprecated state keys if they exist from before
+            for old_key in [f"{key_prefix}_is_playing", f"{key_prefix}_step", f"{key_prefix}_speed"]:
+                if old_key in st.session_state:
+                    del st.session_state[old_key]
 
-            total_steps = len(trajectory)
+    with visual_column:
+        if not trajectory:
+            st.info("This episode has an empty trajectory.")
+            return
 
-            if step_key not in st.session_state:
-                st.session_state[step_key] = 0
-            if playing_key not in st.session_state:
-                st.session_state[playing_key] = False
+        total_steps = len(trajectory)
+        frames = []
+        captions = []
 
-            if st.session_state[step_key] >= total_steps:
-                st.session_state[step_key] = 0
+        for step_idx, step_info in enumerate(trajectory):
+            if room_num in (1, 2, 3):
+                action_name = getattr(step_info.action, "value", str(step_info.action))
+                caption = f"Timestep {step_idx + 1}/{total_steps} • Action `{action_name}` • Outcome `{getattr(step_info, 'outcome', 'normal')}` • Reward {step_info.reward:.3f} • Cumulative {step_info.cumulative_reward:.3f}"
+                svg = render_grid_html(environment, agent_state=step_info.next_state, policy=policy, values=values)
+            elif room_num == 4:
+                st_val = step_info.state
+                caption = f"Step {step_info.timestep}/{total_steps} • State: (x={st_val[0]:.2f}, y={st_val[1]:.2f}, Vx={st_val[2]:.1f}, Vy={st_val[3]:.1f}) • Action: {step_info.action.name} • Reward: {step_info.reward:.2f} • Cum.: {step_info.cumulative_reward:.2f}"
+                trajectory_states = [s.state for s in trajectory[: step_idx + 1]] + [step_info.next_state]
+                svg = render_room4_html(environment, agent_state=step_info.next_state, trajectory=trajectory_states)
+            elif room_num == 5:
+                caption = f"Step {step_info.timestep}/{total_steps} • Action: {step_info.action.name} • Reward: {step_info.reward:.2f} • Cum.: {step_info.cumulative_reward:.2f} • Events: {', '.join(step_info.events)}"
+                svg = render_room5_html(environment, step_info.after_snapshot)
+            else:
+                svg, caption = "", ""
 
-            is_playing = st.session_state[playing_key]
+            frames.append(svg)
+            captions.append(caption)
 
-            with st.container(
-                key=f"replay_controls_{key_prefix}",
-                horizontal=True,
-                vertical_alignment="center",
-                gap="small",
-            ):
-                previous_clicked = st.button(
-                    "←",
-                    key=f"{key_prefix}_btn_prev",
-                    width="content",
-                    help="Previous timestep (Left Arrow)",
-                    disabled=is_playing,
-                )
-                play_clicked = st.button(
-                    "▶",
-                    key=f"{key_prefix}_btn_play",
-                    type="primary",
-                    width="content",
-                    help="Play replay (Spacebar)",
-                    disabled=is_playing,
-                )
-                next_clicked = st.button(
-                    "→",
-                    key=f"{key_prefix}_btn_next",
-                    width="content",
-                    help="Next timestep (Right Arrow)",
-                    disabled=is_playing,
-                )
-                playback_speed = st.selectbox(
-                    "Speed",
-                    options=[0.5, 1.0, 2.0, 4.0],
-                    index=1,
-                    format_func=lambda val: f"{val:g}×",
-                    key=f"{key_prefix}_speed",
-                    help="Controls auto-play speed.",
-                    label_visibility="collapsed",
-                    width=70,
-                    disabled=is_playing,
-                )
-
-            if previous_clicked:
-                st.session_state[playing_key] = False
-                st.session_state[step_key] = max(0, st.session_state[step_key] - 1)
-                st.rerun()
-
-            if play_clicked:
-                st.session_state[playing_key] = True
-                if st.session_state[step_key] >= total_steps - 1:
-                    st.session_state[step_key] = 0
-                st.rerun()
-
-            if next_clicked:
-                st.session_state[playing_key] = False
-                st.session_state[step_key] = min(total_steps - 1, st.session_state[step_key] + 1)
-                st.rerun()
-
-            replay_status = st.empty()
-            st.caption("←/→ step · Space play/pause")
-
-    # Inject Keyboard Shortcuts JS Script
-    js_listener = f"""
-    <script>
-    (function() {{
-      const doc = window.parent.document;
-      if (doc._replay_key_listener_{key_prefix}) return;
-      doc._replay_key_listener_{key_prefix} = true;
-
-      doc.addEventListener('keydown', function(e) {{
-        const active = doc.activeElement;
-        if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {{
-          return;
-        }}
-
-        if (e.key === 'ArrowLeft') {{
-          const btn = doc.querySelector('.st-key-{key_prefix}_btn_prev button');
-          if (btn) {{
-            e.preventDefault();
-            btn.click();
-          }}
-        }} else if (e.key === 'ArrowRight') {{
-          const btn = doc.querySelector('.st-key-{key_prefix}_btn_next button');
-          if (btn) {{
-            e.preventDefault();
-            btn.click();
-          }}
-        }} else if (e.key === ' ' || e.code === 'Space') {{
-          const btn = doc.querySelector('.st-key-{key_prefix}_btn_play button');
-          if (btn && !btn.disabled) {{
-            e.preventDefault();
-            btn.click();
-          }}
-        }}
-      }});
-    }})();
-    </script>
-    """
-    st.iframe(js_listener, height=1, width=1, tab_index=-1)
-
-    def render_single_step(step_idx: int) -> None:
-        step_info = trajectory[step_idx]
-
-        if room_num in (1, 2, 3):
-            action_name = getattr(step_info.action, "value", str(step_info.action))
-            replay_status.caption(
-                f"Timestep {step_idx + 1}/{total_steps} • "
-                f"Action `{action_name}` • Outcome `{getattr(step_info, 'outcome', 'normal')}` • "
-                f"Reward {step_info.reward:.3f} • Cumulative {step_info.cumulative_reward:.3f}"
-            )
-            replay_frame.markdown(
-                render_grid_html(
-                    environment,
-                    agent_state=step_info.next_state,
-                    policy=policy,
-                    values=values,
-                ),
-                unsafe_allow_html=True,
-            )
-        elif room_num == 4:
-            st_val = step_info.state
-            replay_status.caption(
-                f"Step {step_info.timestep}/{total_steps} • "
-                f"State: (x={st_val[0]:.2f}, y={st_val[1]:.2f}, Vx={st_val[2]:.1f}, Vy={st_val[3]:.1f}) • "
-                f"Action: {step_info.action.name} • Step reward: {step_info.reward:.2f} • "
-                f"Cumulative reward: {step_info.cumulative_reward:.2f}"
-            )
-            trajectory_states = [s.state for s in trajectory[: step_idx + 1]] + [step_info.next_state]
-            replay_frame.markdown(
-                render_room4_html(
-                    environment,
-                    agent_state=step_info.next_state,
-                    trajectory=trajectory_states,
-                ),
-                unsafe_allow_html=True,
-            )
-        elif room_num == 5:
-            replay_status.caption(
-                f"Step {step_info.timestep}/{total_steps} • Action: {step_info.action.name} • "
-                f"Reward: {step_info.reward:.2f} • Cumulative: {step_info.cumulative_reward:.2f} • "
-                f"Events: {', '.join(step_info.events)}"
-            )
-            replay_frame.markdown(
-                render_room5_html(environment, step_info.after_snapshot),
-                unsafe_allow_html=True,
-            )
-
-    if st.session_state[playing_key]:
         if room_num == 4:
-            base_delay = 0.02
+            base_delay = 20
         elif room_num == 5:
-            base_delay = 0.05
+            base_delay = 50
         else:
-            base_delay = 0.2
+            base_delay = 200
 
-        delay = base_delay / float(playback_speed)
-        start_step = st.session_state[step_key]
-        for step_i in range(start_step, total_steps):
-            if not st.session_state[playing_key]:
-                break
-            st.session_state[step_key] = step_i
-            render_single_step(step_i)
-            if step_i < total_steps - 1:
-                time.sleep(delay)
+        import json
+        frames_json = json.dumps(frames)
+        captions_json = json.dumps(captions)
         
-        if st.session_state[playing_key]:
-            st.session_state[playing_key] = False
-            st.rerun()
-    else:
-        render_single_step(st.session_state[step_key])
-        if st.session_state[step_key] >= total_steps - 1:
-            replay_status.caption(
-                "Replay complete." if getattr(selected_ep, "success", False) else "Replay complete — episode ended without reaching goal."
-            )
+        html_code = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background: transparent; }
+        .caption { color: #64748b; font-size: 0.85rem; margin-bottom: 8px; font-weight: 500; height: 1.2rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: center; }
+        .controls { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 12px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; }
+        button { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-weight: 600; color: #334155; transition: 0.1s; display: flex; align-items: center; justify-content: center; user-select: none; }
+        button:hover { background: #f1f5f9; border-color: #94a3b8; }
+        button:active { background: #e2e8f0; }
+        button.primary { background: #3b82f6; color: white; border-color: #2563eb; }
+        button.primary:hover { background: #2563eb; }
+        button.primary:active { background: #1d4ed8; }
+        input[type=range] { flex-grow: 1; accent-color: #3b82f6; cursor: pointer; height: 6px; }
+        .speed-select { padding: 6px 8px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 0.875rem; color: #334155; background: #fff; cursor: pointer; outline: none; }
+        .speed-select:focus { border-color: #3b82f6; }
+        .svg-container { display: flex; justify-content: center; align-items: center; min-height: 300px; }
+        </style>
+        </head>
+        <body>
+        <div class="caption" id="caption-el"></div>
+        <div class="svg-container" id="svg-el"></div>
+        <div class="controls">
+            <button id="btn-prev" title="Previous Frame (Left Arrow)">◀</button>
+            <button id="btn-play" class="primary" title="Play/Pause (Spacebar)" style="width: 75px;">Play</button>
+            <button id="btn-next" title="Next Frame (Right Arrow)">▶</button>
+            <input type="range" id="slider" min="0" max="100" value="0" title="Scrub Timeline">
+            <select id="speed-select" class="speed-select" title="Playback Speed">
+                <option value="0.5">0.5×</option>
+                <option value="1.0" selected>1.0×</option>
+                <option value="2.0">2.0×</option>
+                <option value="4.0">4.0×</option>
+            </select>
+        </div>
+        <script>
+            const frames = __FRAMES__;
+            const captions = __CAPTIONS__;
+            const baseDelay = __BASE_DELAY__;
+            const numFrames = frames.length;
+
+            const svgEl = document.getElementById('svg-el');
+            const captionEl = document.getElementById('caption-el');
+            const slider = document.getElementById('slider');
+            const btnPlay = document.getElementById('btn-play');
+            const btnPrev = document.getElementById('btn-prev');
+            const btnNext = document.getElementById('btn-next');
+            const speedSelect = document.getElementById('speed-select');
+
+            slider.max = numFrames - 1;
+            let currentFrame = 0;
+            let playing = false;
+            let lastTime = 0;
+            let animFrame = null;
+
+            function render(index) {
+                if (index < 0) index = 0;
+                if (index >= numFrames) index = numFrames - 1;
+                currentFrame = index;
+                slider.value = index;
+                svgEl.innerHTML = frames[index];
+                captionEl.innerText = captions[index];
+            }
+
+            function togglePlay() {
+                playing = !playing;
+                btnPlay.innerText = playing ? "Pause" : "Play";
+                btnPlay.className = playing ? "" : "primary";
+                if (playing) {
+                    if (currentFrame >= numFrames - 1) {
+                        currentFrame = 0;
+                    }
+                    lastTime = performance.now();
+                    animFrame = requestAnimationFrame(loop);
+                } else {
+                    cancelAnimationFrame(animFrame);
+                }
+            }
+
+            function loop(time) {
+                if (!playing) return;
+                const speed = parseFloat(speedSelect.value);
+                const delay = baseDelay / speed;
+                
+                if (time - lastTime >= delay) {
+                    currentFrame++;
+                    if (currentFrame >= numFrames) {
+                        currentFrame = numFrames - 1;
+                        render(currentFrame);
+                        togglePlay();
+                        return;
+                    }
+                    render(currentFrame);
+                    lastTime = time;
+                }
+                animFrame = requestAnimationFrame(loop);
+            }
+
+            btnPlay.addEventListener('click', togglePlay);
+            btnPrev.addEventListener('click', () => { if (playing) togglePlay(); render(currentFrame - 1); });
+            btnNext.addEventListener('click', () => { if (playing) togglePlay(); render(currentFrame + 1); });
+            slider.addEventListener('input', (e) => {
+                if (playing) togglePlay();
+                render(parseInt(e.target.value));
+            });
+
+            // Keyboard shortcuts (only if clicking inside the iframe)
+            document.addEventListener('keydown', (e) => {
+                if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+                else if (e.code === 'ArrowLeft') { e.preventDefault(); if (playing) togglePlay(); render(currentFrame - 1); }
+                else if (e.code === 'ArrowRight') { e.preventDefault(); if (playing) togglePlay(); render(currentFrame + 1); }
+            });
+
+            // Render initial frame
+            render(0);
+        </script>
+        </body>
+        </html>
+        """.replace("__FRAMES__", frames_json).replace("__CAPTIONS__", captions_json).replace("__BASE_DELAY__", str(base_delay))
+        
+        st.components.v1.html(html_code, height=750, scrolling=False)
 
 
 
@@ -2988,27 +2956,83 @@ def render_room4_controls() -> tuple[str, dict[str, bool], bool]:
             )
 
         uploaded = st.file_uploader("Upload model JSON", type=["json"], key="r4_upload", help=ROOM4_CONTROL_HELP["upload"])
-        if uploaded is not None and st.button("Load model", icon=":material/upload_file:", width="stretch", key="r4_load_btn", help=ROOM4_CONTROL_HELP["load"]):
-            try:
-                env_l, config_l, res_l = import_room4_artifact(uploaded.getvalue().decode("utf-8"))
-            except Exception as exc:
-                st.error(f"Invalid artifact: {exc}")
-            else:
-                st.session_state.room4_result_environment = env_l
-                st.session_state.room4_algorithm_config = config_l
-                st.session_state.room4_result = res_l
-                st.session_state.room4_pipes = list(env_l.config.pipes)
-                st.session_state.room4_pipe_count_v2 = len(env_l.config.pipes)
-                _sync_room4_pipe_widget_state(list(env_l.config.pipes), overwrite=True)
-                st.session_state.room4_reward_values = dict(env_l.config.rewards)
-                st.session_state.room4_reward_enabled = {
-                    event for event, value in env_l.config.rewards.items() if float(value) != 0.0
-                }
-                st.success("Room 4 PPO model loaded successfully!")
-                st.rerun()
+        
+        def r4_load_model_callback():
+            if st.session_state.r4_upload is not None:
+                try:
+                    env_l, config_l, res_l = import_room4_artifact(st.session_state.r4_upload.getvalue().decode("utf-8"))
+                except Exception as exc:
+                    st.session_state.r4_load_error = str(exc)
+                else:
+                    st.session_state.room4_result_environment = env_l
+                    st.session_state.room4_algorithm_config = config_l
+                    st.session_state.room4_result = res_l
+                    st.session_state.room4_pipes = list(env_l.config.pipes)
+                    st.session_state.room4_pipe_count_v2 = len(env_l.config.pipes)
+                    _sync_room4_pipe_widget_state(list(env_l.config.pipes), overwrite=True)
+                    st.session_state.room4_reward_values = dict(env_l.config.rewards)
+                    st.session_state.room4_reward_enabled = {
+                        event for event, value in env_l.config.rewards.items() if float(value) != 0.0
+                    }
+                    st.session_state.r4_load_success = True
+
+        if uploaded is not None:
+            st.button("Load model", icon=":material/upload_file:", width="stretch", key="r4_load_btn", help=ROOM4_CONTROL_HELP["load"], on_click=r4_load_model_callback)
+            
+        if st.session_state.pop("r4_load_error", None):
+            st.error(f"Invalid artifact: {st.session_state.r4_load_error}")
+        if st.session_state.pop("r4_load_success", None):
+            st.success("Room 4 PPO model loaded successfully!")
 
     return "All", requests, run_test
 
+
+def _render_room4_training_summary(result: Any, *, show_charts: bool = True) -> None:
+    df = pd.DataFrame([asdict(m) for m in result.metrics])
+    summary_cols = st.columns(3)
+    summary_cols[0].metric(
+        "Training duration",
+        _format_training_duration(float(getattr(result, "training_duration_seconds", 0.0)))
+    )
+    summary_cols[1].metric("Episodes completed", result.episodes_run)
+    summary_cols[2].metric("Actions selected", sum(getattr(result, "action_counts", {}).values()))
+
+    if show_charts:
+        st.subheader("Training metrics")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.caption("**Total reward per episode**")
+            render_locked_line_chart(df, x="episode", y="total_reward", x_label="Episode", y_label="Total reward")
+            st.caption("**Entropy**")
+            if "entropy" in df.columns:
+                render_locked_line_chart(df, x="episode", y="entropy", x_label="Episode", y_label="Entropy")
+        with c2:
+            st.caption("**Policy loss**")
+            if "policy_loss" in df.columns:
+                render_locked_line_chart(df, x="episode", y="policy_loss", x_label="Episode", y_label="Policy loss")
+            st.caption("**Value loss**")
+            if "value_loss" in df.columns:
+                render_locked_line_chart(df, x="episode", y="value_loss", x_label="Episode", y_label="Value loss")
+
+    st.subheader("Training action distribution")
+    render_locked_bar_chart(
+        _room4_action_dataframe(getattr(result, "action_counts", {})),
+        x="Action",
+        y="Selections",
+        x_label="Action",
+        y_label="Number of selections",
+    )
+
+    st.write(f"**Episodes run:** {result.episodes_run} | **Goal reached in late training:** {'Yes ✅' if result.converged else 'No ❌'}")
+    if hasattr(result, "training_episodes") and result.training_episodes:
+        env_cur = st.session_state.room4_result_environment or build_room4_environment()
+        render_episode_replay_visualizer(
+            env_cur,
+            result.training_episodes,
+            "room4_tr_replay",
+            4,
+            title="Training Episodes Replay",
+        )
 
 def _render_room4_section(
     section: str,
@@ -3128,55 +3152,7 @@ def _render_room4_section(
 
         res = st.session_state.room4_result
         if res:
-            df = pd.DataFrame([asdict(m) for m in res.metrics])
-            summary_cols = st.columns(3)
-            summary_cols[0].metric(
-                "Training duration",
-                _format_training_duration(
-                    float(getattr(res, "training_duration_seconds", 0.0))
-                ),
-            )
-            summary_cols[1].metric("Episodes completed", res.episodes_run)
-            summary_cols[2].metric(
-                "Actions selected", sum(getattr(res, "action_counts", {}).values())
-            )
-
-            if not requests["train"]:
-                st.subheader("Training metrics")
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.caption("**Total reward per episode**")
-                    render_locked_line_chart(df, x="episode", y="total_reward", x_label="Episode", y_label="Total reward")
-                    st.caption("**Entropy**")
-                    if "entropy" in df.columns:
-                        render_locked_line_chart(df, x="episode", y="entropy", x_label="Episode", y_label="Entropy")
-                with c2:
-                    st.caption("**Policy loss**")
-                    if "policy_loss" in df.columns:
-                        render_locked_line_chart(df, x="episode", y="policy_loss", x_label="Episode", y_label="Policy loss")
-                    st.caption("**Value loss**")
-                    if "value_loss" in df.columns:
-                        render_locked_line_chart(df, x="episode", y="value_loss", x_label="Episode", y_label="Value loss")
-
-            st.subheader("Training action distribution")
-            render_locked_bar_chart(
-                _room4_action_dataframe(getattr(res, "action_counts", {})),
-                x="Action",
-                y="Selections",
-                x_label="Action",
-                y_label="Number of selections",
-            )
-
-            st.write(f"**Episodes run:** {res.episodes_run} | **Goal reached in late training:** {'Yes ✅' if res.converged else 'No ❌'}")
-            if hasattr(res, "training_episodes") and res.training_episodes:
-                env_cur = st.session_state.room4_result_environment or build_room4_environment()
-                render_episode_replay_visualizer(
-                    env_cur,
-                    res.training_episodes,
-                    "room4_tr_replay",
-                    4,
-                    title="Training Episodes Replay",
-                )
+            _render_room4_training_summary(res, show_charts=not requests["train"])
         else:
             st.info("Click '▶ Train PPO Agent' in the left sidebar to start training.")
 
@@ -3749,7 +3725,7 @@ def _render_room5_section(
             st.json({
                 "Algorithm": "PPO (Proximal Policy Optimization)",
                 "Observation dimension": OBSERVATION_SIZE,
-                "Observation schema": "Own lane only: lane identity, front-to-rear edge clearance, closing speed, progress",
+                "Observation schema": "Lane (one-hot), progress, and clearance/speed for left, current, and right lanes",
                 "Actions": [action.name for action in Action5],
                 "Hidden architecture": list(config.hidden_dims),
                 "Activation function": config.activation_fn,

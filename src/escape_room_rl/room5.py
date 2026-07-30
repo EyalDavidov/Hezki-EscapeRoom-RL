@@ -122,30 +122,25 @@ class Room5Environment:
         self.progress = 0.0
         self._next_car_id = 0
         self.elapsed_time = 0.0
-        self._next_spawn_time = 1.0
         self.traffic = []
+        for i in range(self.config.traffic_count):
+            self._spawn_arriving_car(distance=30.0 + i * 30.0)
         return self.observation()
 
-    def _spawn_interval(self) -> float:
-        """Space arrivals so the road fills progressively instead of at reset."""
-        density_interval = SPAWN_DISTANCE / (
-            self.config.ego_speed * max(1, self.config.traffic_count)
-        )
-        return float(max(0.5, min(2.0, density_interval)))
+    def _spawn_arriving_car(self, distance: float | None = None) -> None:
+        # Pick the lane with the fewest cars currently to ensure even distribution
+        lane_counts = [
+            sum(1 for car in self.traffic if car.lane == l)
+            for l in range(self.config.lane_count)
+        ]
+        min_count = min(lane_counts)
+        candidate_lanes = [l for l, c in enumerate(lane_counts) if c == min_count]
+        lane = int(self._rng.choice(candidate_lanes))
+        
+        if distance is None:
+            farthest = max([car.distance for car in self.traffic], default=SPAWN_DISTANCE)
+            distance = max(SPAWN_DISTANCE, farthest + 30.0)
 
-    def _spawn_arriving_car(self) -> None:
-        lane = int(self._rng.integers(0, self.config.lane_count))
-        minimum_center_spacing = (
-            self.config.car_length + MIN_TRAFFIC_CLEARANCE_METERS
-        )
-        lane_farthest = max(
-            [car.distance for car in self.traffic if car.lane == lane]
-            + [SPAWN_DISTANCE]
-        )
-        distance = max(
-            SPAWN_DISTANCE * 1.05,
-            lane_farthest + minimum_center_spacing,
-        ) + float(self._rng.uniform(0.0, minimum_center_spacing * 0.35))
         car = TrafficCar(
             car_id=self._next_car_id,
             lane=lane,
@@ -303,7 +298,7 @@ class Room5Environment:
             ):
                 collision = True
 
-            if next_distance < -self.config.car_length:
+            if next_distance <= 0:
                 overtaken += 1
             else:
                 updated_traffic.append(
@@ -316,12 +311,8 @@ class Room5Environment:
                 )
 
         self.traffic = updated_traffic
-        while (
-            len(self.traffic) < self.config.traffic_count
-            and self.elapsed_time + 1e-9 >= self._next_spawn_time
-        ):
+        while len(self.traffic) < self.config.traffic_count:
             self._spawn_arriving_car()
-            self._next_spawn_time += self._spawn_interval()
         if overtaken:
             events.extend(["overtake"] * overtaken)
             reward += overtaken * self.config.rewards.get("overtake", 8.0)
